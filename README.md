@@ -40,6 +40,22 @@ npm run app        # build and open the desktop app
 npx playwright test  # end-to-end: Ruleta (incl. the revolver), Parejas, and two-tab online play
 ```
 
+## Test build on the web (Cloudflare Pages, free)
+
+Cloudflare dashboard → **Workers & Pages → Create → Pages → Import an existing Git repository** →
+pick `bengalmediapr/DominosGame`, then:
+
+| Setting | Value |
+|---|---|
+| Production branch | `main` |
+| Build command | `npm run build` |
+| Build output directory | `dist` |
+| Environment variable | `ELECTRON_SKIP_BINARY_DOWNLOAD` = `1` (the web build doesn't need Electron) |
+
+Node 22 comes from `.nvmrc`. Every push to `main` redeploys `https://<project>.pages.dev`, and every
+other branch gets its own preview URL. Online play in the browser uses the tab-to-tab test mode
+(Steam networking only exists in the desktop build).
+
 ## Package
 
 ```bash
