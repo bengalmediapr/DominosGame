@@ -1,19 +1,21 @@
-import { chooseMove } from '../engine/ai';
 import {
-  CHAMBERS, HandResult, MatchState, Mode, Move, Rules, Side, applyMove, fireChance, isMatchOver, legalMoves,
-  newMatch, pass, pullTrigger, scoreFinishedHand, startNextHand, teamOf,
+  CHAMBERS, MatchState, Mode, Move, Rules, Side, fireChance, legalMoves, teamOf,
 } from '../engine/game';
 import { Tile, handPips, sameTile } from '../engine/tiles';
+import { GuestSession, HostSession, LocalSession, Session, TableConfig } from '../net/session';
+import type { TableEvent } from '../net/table';
+import { SteamBridge, Transport, hostInTabs, hostOnSteam, joinInTabs, joinOnSteam } from '../net/transport';
+import { View, toEngine } from '../net/view';
 import { ACHIEVEMENTS, platform } from '../platform';
+import { SEAT_LOOKS } from '../three/characters';
 import { TableScene } from '../three/scene';
 import { bang, clack, coqui, dryClick, fanfare, setVolume, spin } from './audio';
 import { setLang, t } from './i18n';
 import { Settings, loadSavedMatch, loadSettings, saveMatch, saveSettings } from './settings';
 import { star } from './tileSvg';
 
-type Screen = 'menu' | 'options' | 'howto' | 'game';
-type Overlay = 'hand' | 'match' | 'dead' | null;
-const HUMAN = 0;
+type Screen = 'menu' | 'options' | 'howto' | 'online' | 'lobby' | 'game';
+const ME = 0; // in every view you sit at seat 0
 const DELAYS = { slow: 1300, normal: 800, fast: 350 };
 
 interface Bubble { text: string; big?: boolean }
@@ -21,20 +23,25 @@ interface Bubble { text: string; big?: boolean }
 export class App {
   private settings: Settings = loadSettings();
   private screen: Screen = 'menu';
-  private match: MatchState | null = null;
+  private session: Session | null = null;
+  private unsubscribe: (() => void) | null = null;
   private selected: Tile | null = null;
   private bubbles: (Bubble | null)[] = [null, null, null, null];
-  private overlay: Overlay = null;
   private animateOverlay = false;
-  /** Set while the revolver sequence runs; `waitHuman` resolves when the human pulls the trigger. */
-  private roulette: { shooter: number; waitHuman: (() => void) | null } | null = null;
-  private status: string | null = null;
-  /** Bumped whenever play is abandoned so stale timers do nothing. */
+  /** The hand result card waits a moment so the "¡Dominó!" call can be seen. */
+  private resultHoldUntil = 0;
+  /** You were shot online but the match goes on: you may keep watching. */
+  private watching = false;
+  private notice: string | null = null;
+  private steamName: string | null = null;
+  private steam: SteamBridge | null = null;
   private generation = 0;
+  /** Hands played so far in the match on screen; a drop means a new match started (online). */
+  private historyLength = 0;
   private readonly scene: TableScene;
   private readonly ui: HTMLElement;
 
-  constructor(root: HTMLElement, private readonly rng: () => number = Math.random) {
+  constructor(root: HTMLElement) {
     setLang(this.settings.lang);
     setVolume(this.settings.volume);
     root.innerHTML = '<canvas class="gl"></canvas><div class="ui"></div>';
@@ -42,217 +49,238 @@ export class App {
     this.scene = new TableScene(root.querySelector('canvas')!);
     this.scene.onPick = (p) => (p.kind === 'tile' ? this.tryTile(p.tile) : this.chooseSide(p.side));
     this.scene.onFrame = () => this.positionTags();
-    const saved = loadSavedMatch<MatchState>();
-    if (saved && saved.hand?.seated && saved.pendingShooters && !this.isOver(saved)) this.match = saved;
     root.addEventListener('click', (e) => this.onClick(e));
+    root.addEventListener('submit', (e) => this.onSubmit(e));
     window.addEventListener('keydown', (e) => this.onKey(e));
     (window as unknown as { __domino: unknown }).__domino = { state: () => this.debugState() };
+    void this.initSteam();
     this.render();
   }
 
-  // ---------- flow ----------
+  // ---------- sessions ----------
 
-  private rules(mode: Mode): Rules {
+  private config(): TableConfig {
     const s = this.settings;
-    return { mode, targetScore: s.targetScore, capicuBonus: s.capicuBonus ? 100 : 0, countAllHands: s.countAllHands };
+    return {
+      rules: (mode: Mode): Rules => ({ mode, targetScore: s.targetScore, capicuBonus: s.capicuBonus ? 100 : 0, countAllHands: s.countAllHands }),
+      difficulty: s.difficulty,
+      aiDelayMs: DELAYS[s.speed],
+    };
   }
 
-  private get ruleta(): boolean {
-    return this.match?.rules.mode === 'ruleta';
+  private savedMatch(): MatchState | null {
+    const saved = loadSavedMatch<MatchState>();
+    if (!saved?.hand?.seated || !saved.pendingShooters) return null;
+    const over = saved.winnerTeam !== null || saved.winnerPlayer !== null || (saved.rules.mode === 'ruleta' && !saved.alive[0]);
+    return over ? null : saved;
   }
 
-  /** Over for the human: someone won, or the human is dead. */
-  private isOver(m: MatchState): boolean {
-    return isMatchOver(m) || (m.rules.mode === 'ruleta' && !m.alive[HUMAN]);
-  }
-
-  private startMatch(mode: Mode): void {
-    this.match = newMatch(this.rng, this.rules(mode));
+  private use(session: Session): void {
+    this.leaveSession(false);
+    this.session = session;
+    this.generation++;
+    this.selected = null;
+    this.bubbles = [null, null, null, null];
+    this.watching = false;
+    this.resultHoldUntil = 0;
+    this.historyLength = 0;
     this.scene.resetMatch();
-    saveMatch(this.match);
+    this.unsubscribe = session.subscribe((events) => this.onEvents(events));
+  }
+
+  private leaveSession(render = true): void {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    this.session?.leave();
+    this.session = null;
+    this.generation++;
+    if (render) {
+      this.screen = 'menu';
+      this.scene.setMode('menu');
+      this.render();
+    }
+  }
+
+  private playOffline(mode: Mode, resume = false): void {
+    const saved = resume ? this.savedMatch() ?? undefined : undefined;
+    this.use(new LocalSession(this.config(), saved?.rules.mode ?? mode, saved, saveMatch));
     this.enterGame();
-    const opener = this.match.hand.current;
-    this.say(opener, `${t().names[opener]} ${t().opens}`);
   }
 
   private enterGame(): void {
-    this.generation++;
     this.screen = 'game';
-    this.roulette = null;
-    this.status = null;
-    const m = this.match!;
-    this.overlay = m.hand.result ? (this.isOver(m) ? (m.alive[HUMAN] ? 'match' : 'dead') : 'hand') : null;
-    this.selected = null;
-    this.bubbles = [null, null, null, null];
     this.scene.setMode('game');
     coqui();
-    this.render();
-    this.schedule(this.delay() * 1.5);
-  }
-
-  private toMenu(): void {
-    this.generation++;
-    this.roulette = null;
-    this.screen = 'menu';
-    this.scene.setMode('menu');
+    const v = this.view();
+    if (v?.status?.kind === 'opens') this.say(v.status.seat, `${this.nameOf(v.status.seat)} ${t().opens}`);
     this.render();
   }
 
-  private delay(): number {
-    return DELAYS[this.settings.speed];
+  private async initSteam(): Promise<void> {
+    const steam = platform.steam;
+    if (!steam) return;
+    try {
+      const info = await steam.info();
+      if (!info.available) return;
+      this.steam = steam;
+      this.steamName = info.name ?? null;
+      steam.onJoinRequested((lobbyId) => void this.joinSteam(lobbyId));
+      const pending = await steam.takePendingJoin();
+      if (pending) await this.joinSteam(pending);
+      else this.render();
+    } catch (err) {
+      console.warn('Steam unavailable', err);
+    }
   }
 
-  private schedule(ms: number, fn: () => void = () => this.step()): void {
+  private myName(): string {
+    return this.steamName ?? `${t().guest} ${Math.floor(Math.random() * 90 + 10)}`;
+  }
+
+  private async hostOnline(viaSteam: boolean): Promise<void> {
+    this.notice = t().connecting;
+    this.render();
+    try {
+      const transport: Transport & { code?: string } = viaSteam && this.steam ? await hostOnSteam(this.steam) : hostInTabs();
+      this.use(new HostSession(this.config(), transport, this.myName()));
+      this.notice = null;
+      this.screen = 'lobby';
+      this.scene.setMode('menu');
+      this.render();
+    } catch (err) {
+      console.error(err);
+      this.notice = t().couldNotConnect;
+      this.render();
+    }
+  }
+
+  private async joinSteam(lobbyId: string): Promise<void> {
+    if (!this.steam) return;
+    this.notice = t().connecting;
+    this.screen = 'online';
+    this.render();
+    try {
+      this.joinWith(await joinOnSteam(this.steam, lobbyId));
+    } catch (err) {
+      console.error(err);
+      this.notice = t().couldNotConnect;
+      this.render();
+    }
+  }
+
+  private joinWith(transport: Transport): void {
+    this.use(new GuestSession(transport, this.myName()));
+    this.notice = null;
+    this.screen = 'lobby';
+    this.render();
+  }
+
+  // ---------- reacting to the table ----------
+
+  private view(): View | null {
+    return this.session?.view() ?? null;
+  }
+
+  private get ruleta(): boolean {
+    return this.view()?.match.rules.mode === 'ruleta';
+  }
+
+  private nameOf(viewSeat: number): string {
+    const s = t();
+    if (viewSeat === ME) return s.you;
+    const v = this.view();
+    const info = v?.seats[viewSeat];
+    if (info?.kind === 'human' && info.name) return info.name;
+    const engineSeat = v ? toEngine(viewSeat, v.me) : viewSeat;
+    return s.lookNames[SEAT_LOOKS[engineSeat]];
+  }
+
+  private onEvents(events: TableEvent[]): void {
+    const s = t();
+    if (this.session instanceof GuestSession && this.session.ended) {
+      this.notice = this.session.ended === 'full' ? s.tableFull : s.hostLeft;
+      this.leaveSession(false);
+      this.screen = 'online';
+      this.scene.setMode('menu');
+      this.render();
+      return;
+    }
+    const v = this.view();
+    if (v && this.screen === 'lobby') this.enterGame();
+    if (v) {
+      if (v.match.history.length < this.historyLength) {
+        this.scene.resetMatch();
+        this.watching = false;
+      }
+      this.historyLength = v.match.history.length;
+    }
+    for (const e of events) {
+      switch (e.kind) {
+        case 'played':
+          clack(false);
+          this.selected = null;
+          break;
+        case 'passed':
+          this.say(e.seat, s.pass);
+          break;
+        case 'handEnded': {
+          const r = e.result;
+          clack(true);
+          this.bubbles = [null, null, null, null];
+          if (r.reason === 'domino') this.say(r.winnerPlayer!, r.capicu ? s.capicu : s.domino, true);
+          else if (r.winnerPlayer !== null) this.say(r.winnerPlayer, s.tranque, true);
+          const won = r.winnerPlayer !== null && (this.ruleta ? r.winnerPlayer === ME : r.winnerTeam === teamOf(ME));
+          if (won) {
+            platform.unlockAchievement(ACHIEVEMENTS.firstHand);
+            if (r.capicu) platform.unlockAchievement(ACHIEVEMENTS.capicu);
+            if (r.reason === 'tranque') platform.unlockAchievement(ACHIEVEMENTS.tranque);
+          }
+          if (!this.ruleta) fanfare(won);
+          this.resultHoldUntil = Date.now() + 1400;
+          this.later(1450, () => { this.animateOverlay = true; this.render(); });
+          break;
+        }
+        case 'pull':
+          spin();
+          void this.scene.roulette(e.seat, e.fired, () => bang()).then(() => {
+            if (!e.fired) dryClick();
+            if (e.fired && e.seat === ME) {
+              this.animateOverlay = true;
+              fanfare(false);
+              this.render();
+            }
+          });
+          break;
+        case 'matchEnded': {
+          const m = v?.match;
+          if (!m) break;
+          const won = m.rules.mode === 'ruleta' ? m.winnerPlayer === ME : m.winnerTeam === teamOf(ME);
+          if (won) {
+            platform.unlockAchievement(ACHIEVEMENTS.firstMatch);
+            if (m.pollona) platform.unlockAchievement(ACHIEVEMENTS.pollona);
+            if (this.settings.difficulty === 'hard' && this.session?.kind === 'local') platform.unlockAchievement(ACHIEVEMENTS.hardWin);
+          }
+          if (m.rules.mode === 'ruleta') fanfare(won);
+          this.animateOverlay = true;
+          break;
+        }
+      }
+    }
+    if (v?.status?.kind === 'opens' && v.match.hand.placements.length === 0 && !this.bubbles[v.status.seat]) {
+      this.say(v.status.seat, `${this.nameOf(v.status.seat)} ${s.opens}`);
+    }
+    this.render();
+  }
+
+  private later(ms: number, fn: () => void): void {
     const gen = this.generation;
     window.setTimeout(() => { if (gen === this.generation) fn(); }, ms);
-  }
-
-  private setHand(next: MatchState['hand']): void {
-    this.match = { ...this.match!, hand: next };
-    if (next.result) this.finishHand(next.result);
-    saveMatch(this.match);
-  }
-
-  /** Advance whoever's turn it is. */
-  private step(): void {
-    const m = this.match;
-    if (!m || this.screen !== 'game' || m.hand.result || this.overlay || this.roulette) return;
-    const h = m.hand;
-    if (h.current === HUMAN && legalMoves(h).length > 0) {
-      this.render();
-      return;
-    }
-    const move = h.current === HUMAN ? null : chooseMove(h, m.rules, this.settings.difficulty, this.rng);
-    if (move) this.play(move);
-    else {
-      this.say(h.current, t().pass);
-      this.setHand(pass(h));
-      this.render();
-      this.schedule(this.delay());
-    }
-  }
-
-  private play(move: Move): void {
-    const h = this.match!.hand;
-    this.selected = null;
-    this.setHand(applyMove(h, move, this.match!.rules));
-    clack(this.match!.hand.result !== null);
-    this.render();
-    if (!this.match!.hand.result) this.schedule(this.delay());
-  }
-
-  private finishHand(result: HandResult): void {
-    const s = t();
-    this.bubbles = [null, null, null, null];
-    if (result.reason === 'domino') this.say(result.winnerPlayer!, result.capicu ? s.capicu : s.domino, true);
-    else if (result.winnerPlayer !== null) this.say(result.winnerPlayer, s.tranque, true);
-    this.match = scoreFinishedHand(this.match!);
-    const m = this.match;
-    const humanWonHand = result.winnerPlayer !== null
-      && (this.ruleta ? result.winnerPlayer === HUMAN : result.winnerTeam === teamOf(HUMAN));
-    if (humanWonHand) {
-      platform.unlockAchievement(ACHIEVEMENTS.firstHand);
-      if (result.capicu) platform.unlockAchievement(ACHIEVEMENTS.capicu);
-      if (result.reason === 'tranque') platform.unlockAchievement(ACHIEVEMENTS.tranque);
-    }
-    if (!this.ruleta && m.winnerTeam !== null) {
-      const won = m.winnerTeam === teamOf(HUMAN);
-      if (won) {
-        platform.unlockAchievement(ACHIEVEMENTS.firstMatch);
-        if (m.pollona) platform.unlockAchievement(ACHIEVEMENTS.pollona);
-        if (this.settings.difficulty === 'hard') platform.unlockAchievement(ACHIEVEMENTS.hardWin);
-      }
-      fanfare(won);
-    } else if (!this.ruleta) {
-      fanfare(humanWonHand);
-    }
-    this.schedule(1400, () => {
-      this.overlay = !this.ruleta && m.winnerTeam !== null ? 'match' : 'hand';
-      this.animateOverlay = true;
-      this.render();
-    });
-  }
-
-  /** "Next" on the hand result card: in ruleta, the losers face the revolver first. */
-  private continueAfterHand(): void {
-    this.overlay = null;
-    if (this.ruleta && this.match!.pendingShooters.length > 0) {
-      void this.runRoulette();
-      return;
-    }
-    this.nextHand();
-  }
-
-  private async runRoulette(): Promise<void> {
-    const gen = this.generation;
-    const s = t();
-    const pause = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
-    while (this.match && this.match.pendingShooters.length > 0) {
-      const shooter = this.match.pendingShooters[0];
-      this.roulette = { shooter, waitHuman: null };
-      this.status = shooter === HUMAN ? s.youMustShoot : `${s.mustShoot} ${s.names[shooter]}`;
-      this.bubbles = [null, null, null, null];
-      if (shooter === HUMAN) {
-        await new Promise<void>((resolve) => { this.roulette!.waitHuman = resolve; this.render(); });
-      } else {
-        this.render();
-        await pause(1100);
-      }
-      if (gen !== this.generation) return;
-      this.roulette.waitHuman = null;
-      this.status = null;
-      const { match, fired } = pullTrigger(this.match, shooter);
-      this.render();
-      spin();
-      await this.scene.roulette(shooter, fired, () => bang());
-      if (gen !== this.generation) return;
-      this.match = match;
-      saveMatch(match);
-      if (fired && shooter === HUMAN) {
-        this.roulette = null;
-        this.overlay = 'dead';
-        this.animateOverlay = true;
-        fanfare(false);
-        this.render();
-        return;
-      }
-      if (!fired) dryClick();
-      this.status = `${s.names[shooter]}: ${fired ? s.isOut : s.emptyChamber}`;
-      this.render();
-      await pause(1500);
-      if (gen !== this.generation) return;
-    }
-    if (!this.match) return;
-    this.roulette = null;
-    this.status = null;
-    if (this.match.winnerPlayer !== null) {
-      const won = this.match.winnerPlayer === HUMAN;
-      if (won) {
-        platform.unlockAchievement(ACHIEVEMENTS.firstMatch);
-        if (this.settings.difficulty === 'hard') platform.unlockAchievement(ACHIEVEMENTS.hardWin);
-      }
-      fanfare(won);
-      this.overlay = 'match';
-      this.animateOverlay = true;
-      this.render();
-      return;
-    }
-    this.nextHand();
-  }
-
-  private nextHand(): void {
-    this.match = startNextHand(this.match!, this.rng);
-    saveMatch(this.match);
-    this.overlay = null;
-    this.bubbles = [null, null, null, null];
-    this.render();
-    this.schedule(this.delay());
   }
 
   private say(seat: number, text: string, big = false): void {
     const bubble = { text, big };
     this.bubbles[seat] = bubble;
-    this.schedule(1900, () => {
+    this.later(1900, () => {
       if (this.bubbles[seat] === bubble) {
         this.bubbles[seat] = null;
         this.render();
@@ -263,15 +291,17 @@ export class App {
   // ---------- input ----------
 
   private humanMovesFor(tile: Tile): Move[] {
-    const h = this.match?.hand;
-    if (!h || h.current !== HUMAN || h.result || this.overlay || this.roulette) return [];
+    const v = this.view();
+    if (!v || v.phase.name !== 'playing') return [];
+    const h = v.match.hand;
+    if (h.current !== ME || h.result) return [];
     return legalMoves(h).filter((m) => sameTile(m.tile, tile));
   }
 
   private tryTile(tile: Tile): void {
     const moves = this.humanMovesFor(tile);
     if (moves.length === 0) return;
-    const h = this.match!.hand;
+    const h = this.view()!.match.hand;
     if (moves.length === 1) return this.play(moves[0]);
     if (h.leftEnd === h.rightEnd) {
       // Same number on both ends: grow the shorter arm so the board stays balanced.
@@ -289,41 +319,88 @@ export class App {
     }
   }
 
+  private play(move: Move): void {
+    this.selected = null;
+    this.session?.send({ kind: 'move', move });
+  }
+
+  private continueAfterHand(): void {
+    if (this.view()?.isController) this.session?.send({ kind: 'continue' });
+  }
+
   private onClick(e: Event): void {
     const el = (e.target as Element).closest<HTMLElement>('[data-action]');
     if (!el) return;
     const { action, value } = el.dataset;
     switch (action) {
-      case 'play': this.startMatch(value as Mode); break;
-      case 'continue': this.enterGame(); break;
+      case 'play': this.playOffline(value as Mode); break;
+      case 'continue': this.playOffline('ruleta', true); break;
       case 'options': this.screen = 'options'; this.render(); break;
       case 'howto': this.screen = 'howto'; this.render(); break;
-      case 'menu': this.toMenu(); break;
+      case 'online': this.notice = null; this.screen = 'online'; this.render(); break;
+      case 'host-steam': void this.hostOnline(true); break;
+      case 'host-tabs': void this.hostOnline(false); break;
+      case 'invite': (this.session as HostSession | null)?.invite(); break;
+      case 'lobby-mode': (this.session as HostSession).setMode(value as Mode); this.render(); break;
+      case 'start': (this.session as HostSession).start(); break;
+      case 'menu': this.goMenu(); break;
       case 'quit': platform.quit(); break;
       case 'fullscreen': platform.toggleFullscreen(); break;
       case 'side': this.chooseSide(value as Side); break;
       case 'next-hand': this.continueAfterHand(); break;
-      case 'trigger': this.roulette?.waitHuman?.(); break;
-      case 'new-match': this.startMatch(this.match?.rules.mode ?? 'ruleta'); break;
+      case 'trigger': this.session?.send({ kind: 'trigger' }); break;
+      case 'watch': this.watching = true; this.render(); break;
+      case 'new-match':
+        this.watching = false;
+        this.scene.resetMatch();
+        this.session?.newMatch(this.view()?.match.rules.mode);
+        break;
       case 'set': this.updateSetting(el.dataset.key as keyof Settings, value!); break;
     }
   }
 
-  private onKey(e: KeyboardEvent): void {
-    if (e.key === 'F11') { e.preventDefault(); platform.toggleFullscreen(); return; }
-    if (this.screen !== 'game') {
-      if (e.key === 'Escape' && this.screen !== 'menu') { this.screen = 'menu'; this.render(); }
+  private onSubmit(e: Event): void {
+    const form = e.target as HTMLFormElement;
+    if (form.id !== 'join-form') return;
+    e.preventDefault();
+    const code = (form.querySelector('#join-code') as HTMLInputElement).value.trim();
+    if (code.length >= 4) this.joinWith(joinInTabs(code));
+  }
+
+  /** Leaving a local match keeps it saved; leaving an online table closes the connection. */
+  private goMenu(): void {
+    if (this.session && this.session.kind !== 'local') {
+      this.leaveSession();
       return;
     }
-    if (e.key === 'Escape') { this.toMenu(); return; }
-    if (this.roulette?.waitHuman && (e.key === 'Enter' || e.key === ' ')) { this.roulette.waitHuman(); return; }
-    if (this.overlay && (e.key === 'Enter' || e.key === ' ')) {
-      if (this.overlay === 'hand') this.continueAfterHand(); else this.startMatch(this.match!.rules.mode);
+    this.leaveSession(false);
+    this.screen = 'menu';
+    this.scene.setMode('menu');
+    this.render();
+  }
+
+  private onKey(e: KeyboardEvent): void {
+    if (e.key === 'F11') { e.preventDefault(); platform.toggleFullscreen(); return; }
+    if ((e.target as HTMLElement).tagName === 'INPUT') return;
+    if (this.screen !== 'game') {
+      if (e.key === 'Escape' && this.screen !== 'menu') this.goMenu();
+      return;
+    }
+    if (e.key === 'Escape') { this.goMenu(); return; }
+    const v = this.view();
+    if (!v) return;
+    if (v.phase.name === 'roulette' && v.phase.awaitingTrigger && v.phase.shooter === ME && (e.key === 'Enter' || e.key === ' ')) {
+      this.session?.send({ kind: 'trigger' });
+      return;
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+      if (v.phase.name === 'handOver') this.continueAfterHand();
+      else if (v.phase.name === 'matchOver' && v.isController) this.session?.newMatch(v.match.rules.mode);
       return;
     }
     const n = Number(e.key);
-    const hand = this.match?.hand.hands[HUMAN];
-    if (hand && n >= 1 && n <= hand.length) this.tryTile(hand[n - 1]);
+    const hand = v.match.hand.hands[ME];
+    if (n >= 1 && n <= hand.length) this.tryTile(hand[n - 1]);
     if (this.selected && e.key === 'ArrowLeft') this.chooseSide('left');
     if (this.selected && e.key === 'ArrowRight') this.chooseSide('right');
   }
@@ -341,33 +418,54 @@ export class App {
 
   /** Read-only snapshot for automated tests. */
   private debugState() {
-    const h = this.match?.hand;
+    const v = this.view();
+    const h = v?.match.hand;
+    const lobby = this.session?.lobby();
     return {
-      screen: this.screen, overlay: this.overlay, mode: this.match?.rules.mode,
-      current: h?.current, finished: !!h?.result, roulette: !!this.roulette,
-      awaitingTrigger: !!this.roulette?.waitHuman, alive: this.match?.alive,
-      hand: h?.hands[HUMAN].map((x) => x.join('-')) ?? [],
-      playable: h && h.current === HUMAN && !h.result && !this.overlay && !this.roulette
+      screen: this.screen, session: this.session?.kind ?? null, overlay: this.overlayKind(), mode: v?.match.rules.mode,
+      phase: v?.phase.name ?? null, current: h?.current, finished: !!h?.result,
+      roulette: v?.phase.name === 'roulette',
+      awaitingTrigger: v?.phase.name === 'roulette' && v.phase.awaitingTrigger && v.phase.shooter === ME,
+      alive: v?.match.alive, isController: v?.isController ?? false,
+      hand: h?.hands[ME].map((x) => x.join('-')) ?? [],
+      playable: h && v?.phase.name === 'playing' && h.current === ME && !h.result
         ? legalMoves(h).map((m) => `${m.tile.join('-')}:${m.side}`) : [],
       selected: this.selected?.join('-') ?? null,
+      lobby: lobby ? { code: lobby.code, me: lobby.me, seats: lobby.seats.map((s) => s.kind) } : null,
+      notice: this.notice,
     };
   }
 
   // ---------- rendering ----------
 
+  private overlayKind(): 'hand' | 'match' | 'dead' | null {
+    const v = this.view();
+    if (!v) return null;
+    const m = v.match;
+    if (m.rules.mode === 'ruleta' && !m.alive[ME] && !this.watching && v.phase.name !== 'roulette') return 'dead';
+    if (v.phase.name === 'matchOver') return m.rules.mode === 'ruleta' && !m.alive[ME] ? 'dead' : 'match';
+    if (v.phase.name === 'handOver' && Date.now() >= this.resultHoldUntil) return 'hand';
+    return null;
+  }
+
   private render(): void {
     document.documentElement.lang = this.settings.lang;
-    const view = { menu: () => this.menuView(), options: () => this.optionsView(), howto: () => this.howToView(), game: () => this.gameView() };
-    this.ui.innerHTML = view[this.screen]();
+    const views: Record<Screen, () => string> = {
+      menu: () => this.menuView(), options: () => this.optionsView(), howto: () => this.howToView(),
+      online: () => this.onlineView(), lobby: () => this.lobbyView(), game: () => this.gameView(),
+    };
+    this.ui.innerHTML = views[this.screen]();
     this.ui.className = `ui ui-${this.screen}`;
     this.animateOverlay = false;
-    if (this.screen === 'game' && this.match) {
-      const h = this.match.hand;
-      const myTurn = h.current === HUMAN && !h.result && !this.overlay && !this.roulette;
+    const v = this.view();
+    if (this.screen === 'game' && v) {
+      const h = v.match.hand;
+      const myTurn = v.phase.name === 'playing' && h.current === ME && !h.result;
+      this.scene.setCast([0, 1, 2, 3].map((p) => (p === ME ? null : SEAT_LOOKS[toEngine(p, v.me)])));
       this.scene.sync({
         hand: h,
-        alive: this.ruleta ? this.match.alive : [true, true, true, true],
-        ruleta: this.ruleta,
+        alive: v.match.rules.mode === 'ruleta' ? v.match.alive : [true, true, true, true],
+        ruleta: v.match.rules.mode === 'ruleta',
         reveal: h.result !== null,
         playable: myTurn ? legalMoves(h).map((m) => m.tile) : [],
         selected: this.selected,
@@ -393,7 +491,7 @@ export class App {
 
   private menuView(): string {
     const s = t();
-    const canContinue = this.match && !this.isOver(this.match);
+    const canContinue = this.savedMatch() !== null;
     return `<main class="screen menu">
       ${this.flag()}
       <h1 class="logo">${s.title}</h1>
@@ -404,12 +502,68 @@ export class App {
           <span class="mode-title">${s.ruleta}</span><span class="mode-desc">${s.ruletaDesc}</span></button>
         <button class="btn mode" data-action="play" data-value="parejas">
           <span class="mode-title">${s.parejas}</span><span class="mode-desc">${s.parejasDesc}</span></button>
+        <button class="btn mode online" data-action="online">
+          <span class="mode-title">${s.online}</span><span class="mode-desc">${s.onlineDesc}</span></button>
         <div class="row">
           <button class="btn small" data-action="howto">${s.howTo}</button>
           <button class="btn small" data-action="options">${s.options}</button>
           ${platform.isDesktop ? `<button class="btn small ghost" data-action="quit">${s.quit}</button>` : ''}
         </div>
       </nav>
+    </main>`;
+  }
+
+  private onlineView(): string {
+    const s = t();
+    const steam = this.steam
+      ? `<button class="btn primary" data-action="host-steam">${s.createTable}</button><p class="note">${s.steamJoinHint}</p>`
+      : platform.isDesktop ? `<p class="note">${s.steamMissing}</p>` : '';
+    // Tab-to-tab tables need no Steam: handy for trying online play on one computer.
+    const tabs = this.steam ? '' : `<section class="online-box">
+        <h3>${s.tabsTitle}</h3><p class="note">${s.tabsDesc}</p>
+        <button class="btn" data-action="host-tabs">${s.createTable}</button>
+        <form id="join-form" class="join-row">
+          <label for="join-code">${s.codeLabel}</label>
+          <input id="join-code" maxlength="6" autocomplete="off" spellcheck="false" placeholder="ABCD">
+          <button class="btn small" type="submit">${s.join}</button>
+        </form>
+      </section>`;
+    return `<main class="screen panel">
+      <h2>${s.online}</h2>
+      ${this.notice ? `<p class="notice">${this.notice}</p>` : ''}
+      ${steam}${tabs}
+      <button class="btn ghost" data-action="menu">${s.back}</button>
+    </main>`;
+  }
+
+  private lobbyView(): string {
+    const s = t();
+    const lobby = this.session?.lobby();
+    if (!lobby) {
+      return `<main class="screen panel"><h2>${s.lobbyTitle}</h2><p class="notice">${this.notice ?? s.connecting}</p>
+        <button class="btn ghost" data-action="menu">${s.leaveTable}</button></main>`;
+    }
+    const seats = lobby.seats.map((seat, p) => {
+      const look = s.lookNames[SEAT_LOOKS[p]];
+      const who = seat.kind === 'human' ? seat.name ?? s.guest : `${look} · ${s.seatAi}`;
+      const tags = [p === lobby.me ? s.seatYou : '', p === 0 ? s.seatHost : ''].filter(Boolean).join(', ');
+      const team = lobby.mode === 'parejas' ? `team-${teamOf(p)}` : '';
+      return `<li class="seat-row ${seat.kind} ${team}"><span class="seat-name">${who}</span>${tags ? `<span class="seat-tag">${tags}</span>` : ''}</li>`;
+    }).join('');
+    const modes = lobby.isHost
+      ? `<div class="option-row"><span class="option-label">${s.mode}</span><div class="seg">${(['ruleta', 'parejas'] as Mode[])
+        .map((m) => `<button class="seg-btn ${m === lobby.mode ? 'on' : ''}" data-action="lobby-mode" data-value="${m}">${m === 'ruleta' ? s.ruleta : s.parejas}</button>`).join('')}</div></div>`
+      : `<p class="note">${s.mode}: ${lobby.mode === 'ruleta' ? s.ruleta : s.parejas}</p>`;
+    return `<main class="screen panel lobby">
+      <h2>${s.lobbyTitle}</h2>
+      ${lobby.code ? `<p class="code">${s.codeLabel}: <b>${lobby.code}</b></p>` : ''}
+      <ul class="seats">${seats}</ul>
+      ${modes}
+      <div class="row">
+        ${lobby.canInvite ? `<button class="btn" data-action="invite">${s.inviteFriends}</button>` : ''}
+        ${lobby.isHost ? `<button class="btn primary" data-action="start">${s.start}</button>` : `<p class="note">${s.waitingStart}</p>`}
+      </div>
+      <button class="btn ghost" data-action="menu">${s.leaveTable}</button>
     </main>`;
   }
 
@@ -449,32 +603,44 @@ export class App {
   }
 
   private chambers(p: number): string {
-    const r = this.match!.revolvers[p];
+    const r = this.view()!.match.revolvers[p];
     const dots = Array.from({ length: CHAMBERS }, (_, i) => `<i class="${i < r.pulls ? 'used' : ''}"></i>`).join('');
     return `<span class="chambers" title="${t().chambers}">${dots}</span>`;
   }
 
-  private gameView(): string {
-    const m = this.match!;
+  private statusText(v: View): string | null {
     const s = t();
+    const st = v.status;
+    if (!st || st.kind === 'opens') return null;
+    if (st.kind === 'mustShoot') return st.seat === ME ? s.youMustShoot : `${s.mustShoot} ${this.nameOf(st.seat)}`;
+    return `${this.nameOf(st.seat)}: ${st.kind === 'out' ? s.isOut : s.emptyChamber}`;
+  }
+
+  private gameView(): string {
+    const v = this.view();
+    const s = t();
+    if (!v) return `<main class="screen panel"><p class="notice">${s.connecting}</p></main>`;
+    const m = v.match;
     const h = m.hand;
+    const ruleta = m.rules.mode === 'ruleta';
     const reveal = h.result !== null;
     const tags = [1, 2, 3].map((p) => {
-      const out = this.ruleta && !m.alive[p];
-      const active = !h.result && h.current === p && !out;
+      const out = ruleta && !m.alive[p];
+      const active = !h.result && h.current === p && !out && v.phase.name === 'playing';
       const bubble = this.bubbles[p];
-      return `<div class="tag ${active ? 'active' : ''} ${out ? 'out' : ''} ${this.ruleta ? 'solo' : `team-${teamOf(p)}`}" data-seat="${p}">
+      const human = v.seats[p].kind === 'human';
+      return `<div class="tag ${active ? 'active' : ''} ${out ? 'out' : ''} ${ruleta ? 'solo' : `team-${teamOf(p)}`} ${human ? 'human' : ''}" data-seat="${p}">
         ${bubble ? `<div class="bubble ${bubble.big ? 'big' : ''}">${bubble.text}</div>` : ''}
-        <div class="nameplate"><span class="name">${out ? '✝ ' : ''}${s.names[p]}</span>
+        <div class="nameplate"><span class="name">${out ? '✝ ' : ''}${this.nameOf(p)}</span>
           ${active ? '<span class="dots"><i></i><i></i><i></i></span>' : ''}
           ${reveal && !out ? `<span class="count">${handPips(h.hands[p])}</span>` : ''}
-          ${this.ruleta && !out ? this.chambers(p) : ''}</div>
+          ${ruleta && !out ? this.chambers(p) : ''}</div>
       </div>`;
     }).join('');
 
-    const myTurn = h.current === HUMAN && !h.result && !this.overlay && !this.roulette;
-    const myBubble = this.bubbles[HUMAN];
-    const score = this.ruleta
+    const myTurn = v.phase.name === 'playing' && h.current === ME && !h.result;
+    const myBubble = this.bubbles[ME];
+    const score = ruleta
       ? `<div class="score"><span class="vs">${s.ruleta} · ${s.hand} ${m.handNumber}</span></div>`
       : `<div class="score"><span class="team team-0">${s.us} <b>${m.scores[0]}</b></span>
           <span class="vs">${s.hand} ${m.handNumber} · ${s.to} ${m.rules.targetScore}</span>
@@ -483,11 +649,12 @@ export class App {
       ? `<div class="sides"><span>${s.chooseSide}</span>${this.humanMovesFor(this.selected).map((mv) =>
         `<button class="btn small" data-action="side" data-value="${mv.side}">${mv.side === 'left' ? '◀ ' + s.leftEnd : s.rightEnd + ' ▶'}</button>`).join('')}</div>`
       : '';
-    const gun = m.revolvers[HUMAN];
-    const trigger = this.roulette?.waitHuman
+    const gun = m.revolvers[ME];
+    const trigger = v.phase.name === 'roulette' && v.phase.awaitingTrigger && v.phase.shooter === ME
       ? `<div class="trigger-panel"><p class="odds">${s.odds}: <b>1 / ${CHAMBERS - gun.pulls}</b> (${Math.round(fireChance(gun) * 100)}%)</p>
          <button class="btn primary trigger" data-action="trigger">${s.pullTrigger}</button></div>`
       : '';
+    const status = this.statusText(v);
     return `<main class="screen game">
       <header class="hud">
         <button class="btn small ghost" data-action="menu">☰ ${s.menu}</button>
@@ -498,54 +665,64 @@ export class App {
       <footer class="me ${myTurn ? 'active' : ''}">
         ${myBubble ? `<div class="bubble ${myBubble.big ? 'big' : ''}">${myBubble.text}</div>` : ''}
         ${myTurn && !this.selected ? `<p class="hint">${s.clickTiles}</p>` : ''}
+        ${this.watching && ruleta && !m.alive[ME] ? `<p class="hint">${s.youAreOut}</p>` : ''}
         ${sideButtons}
-        <div class="nameplate"><span class="name">${s.names[HUMAN]}</span>
+        <div class="nameplate"><span class="name">${s.you}</span>
           ${myTurn ? `<span class="your-turn">${s.yourTurn}</span>` : ''}
-          ${reveal ? `<span class="count">${handPips(h.hands[HUMAN])}</span>` : ''}
-          ${this.ruleta ? this.chambers(HUMAN) : ''}</div>
+          ${reveal ? `<span class="count">${handPips(h.hands[ME])}</span>` : ''}
+          ${ruleta && m.alive[ME] ? this.chambers(ME) : ''}</div>
       </footer>
-      ${this.status ? `<div class="status">${this.status}</div>` : ''}
+      ${status ? `<div class="status">${status}</div>` : ''}
       ${trigger}
-      ${this.overlayView()}
+      ${this.overlayView(v)}
     </main>`;
   }
 
-  private overlayView(): string {
-    if (!this.overlay) return '';
-    const m = this.match!;
+  private overlayView(v: View): string {
+    const kind = this.overlayKind();
+    if (!kind) return '';
+    const m = v.match;
     const s = t();
+    const ruleta = m.rules.mode === 'ruleta';
     const enter = this.animateOverlay ? 'enter' : '';
-    if (this.overlay === 'dead') {
+    const waiting = `<p class="note">${s.waitingHost}</p>`;
+    const newMatch = v.isController ? `<button class="btn primary" data-action="new-match">${s.newMatch}</button>` : '';
+    if (kind === 'dead') {
+      const goesOn = v.phase.name !== 'matchOver';
       return `<div class="overlay dead ${enter}"><div class="card lose">
         <h2 class="you-died">${s.youDied}</h2>
-        <div class="row"><button class="btn primary" data-action="new-match">${s.newMatch}</button>
+        <div class="row">${goesOn ? `<button class="btn primary" data-action="watch">${s.watch}</button>` : newMatch || waiting}
         <button class="btn" data-action="menu">${s.menu}</button></div></div></div>`;
     }
-    if (this.overlay === 'match') {
-      const won = this.ruleta ? m.winnerPlayer === HUMAN : m.winnerTeam === teamOf(HUMAN);
-      const headline = this.ruleta ? (won ? s.youWinRuleta : `${s.names[m.winnerPlayer!]} ${s.winsRuleta}`) : won ? s.weWin : s.theyWin;
+    if (kind === 'match') {
+      const won = ruleta ? m.winnerPlayer === ME : m.winnerTeam === teamOf(ME);
+      const headline = ruleta ? (won ? s.youWinRuleta : `${this.nameOf(m.winnerPlayer!)} ${s.winsRuleta}`) : won ? s.weWin : s.theyWin;
       return `<div class="overlay ${enter}"><div class="card ${won ? 'win' : 'lose'}">
         ${this.flag()}
         <h2>${headline}</h2>
-        ${!this.ruleta && m.pollona ? `<p class="pollona">${s.pollona}</p>` : ''}
-        ${this.ruleta ? `<p>${s.lastStanding}</p>` : `<p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>`}
-        <div class="row"><button class="btn primary" data-action="new-match">${s.newMatch}</button>
+        ${!ruleta && m.pollona ? `<p class="pollona">${s.pollona}</p>` : ''}
+        ${ruleta ? `<p>${s.lastStanding}</p>` : `<p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>`}
+        <div class="row">${newMatch || waiting}
         <button class="btn" data-action="menu">${s.menu}</button></div></div></div>`;
     }
     const r = m.history[m.history.length - 1];
+    if (!r) return '';
     const headline = r.reason === 'domino' ? (r.capicu ? s.capicu : s.domino) : s.tranque;
-    const who = r.winnerPlayer === null ? s.tiedTranque : `${s.names[r.winnerPlayer]} ${s.wonHand}`;
+    const who = r.winnerPlayer === null ? s.tiedTranque : `${this.nameOf(r.winnerPlayer)} ${s.wonHand}`;
     const shooters = m.pendingShooters;
-    const humanWon = this.ruleta ? r.winnerPlayer === HUMAN : r.winnerTeam === teamOf(HUMAN);
+    const humanWon = ruleta ? r.winnerPlayer === ME : r.winnerTeam === teamOf(ME);
     const counts = r.pipCounts.map((c, p) => (m.hand.seated[p]
-      ? `<li class="${this.ruleta ? (shooters.includes(p) ? 'shooter' : '') : `team-${teamOf(p)}`}">${s.names[p]}<b>${c}</b></li>` : '')).join('');
+      ? `<li class="${ruleta ? (shooters.includes(p) ? 'shooter' : '') : `team-${teamOf(p)}`}">${this.nameOf(p)}<b>${c}</b></li>` : '')).join('');
+    const next = v.isController
+      ? `<button class="btn primary" data-action="next-hand">${ruleta && shooters.length ? s.continueBtn : s.nextHand}</button>`
+      : waiting;
     return `<div class="overlay ${enter}"><div class="card ${humanWon ? 'win' : r.winnerPlayer === null ? '' : 'lose'}">
       <h2>${headline}</h2><p>${who}</p>
-      ${!this.ruleta && r.winnerTeam !== null ? `<p class="points team-${r.winnerTeam}">+${r.points} ${s.points}</p>` : ''}
+      ${!ruleta && r.winnerTeam !== null ? `<p class="points team-${r.winnerTeam}">+${r.points} ${s.points}</p>` : ''}
       <h3>${s.pipsLeft}</h3><ul class="counts">${counts}</ul>
-      ${this.ruleta
-        ? `<p class="must-shoot">${shooters.length ? `${s.mustShoot} <b>${shooters.map((p) => s.names[p]).join(', ')}</b>` : s.nobodyShoots}</p>`
+      ${ruleta
+        ? `<p class="must-shoot">${shooters.length ? `${s.mustShoot} <b>${shooters.map((p) => this.nameOf(p)).join(', ')}</b>` : s.nobodyShoots}</p>`
         : `<p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>`}
-      <button class="btn primary" data-action="next-hand">${this.ruleta && shooters.length ? s.continueBtn : s.nextHand}</button></div></div>`;
+      ${next}</div></div>`;
   }
 }

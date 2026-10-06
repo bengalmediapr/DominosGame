@@ -37,11 +37,13 @@ app.userAgentFallback = app.userAgentFallback.normalize('NFD').replace(/[^\x20-\
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
 
 let steam = null;
-function initSteam() {
+let steamworks = null;
+// Must run before the app is ready: the Steam overlay needs extra Chromium switches.
+(function initSteam() {
   const appId = readAppId();
   if (!appId) return;
   try {
-    const steamworks = require('steamworks.js');
+    steamworks = require('steamworks.js');
     steam = steamworks.init(appId);
     steamworks.electronEnableSteamOverlay();
     console.log(`[steam] initialised for app ${appId} as ${steam.localplayer.getName()}`);
@@ -49,7 +51,74 @@ function initSteam() {
     console.warn('[steam] not available:', err.message);
     steam = null;
   }
+})();
+
+// ---------- online play over Steam: friends-only lobbies + P2P messages ----------
+
+const CB = { LobbyChatUpdate: 5, P2PSessionRequest: 6, GameLobbyJoinRequested: 8 }; // steamworks.js SteamCallback
+const MEMBER_ENTERED = 0;
+const RELIABLE = 2;
+let lobby = null;
+let pendingJoin = null;
+
+// Launched by accepting an invite while the game was closed: "+connect_lobby <id>".
+const connectArg = process.argv.indexOf('+connect_lobby');
+if (connectArg >= 0 && process.argv[connectArg + 1]) pendingJoin = process.argv[connectArg + 1];
+
+const selfId = () => steam.localplayer.getSteamId().steamId64.toString();
+const toRenderer = (channel, ...args) => {
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send(channel, ...args);
+};
+const lobbyMembers = () => (lobby ? lobby.getMembers().map((m) => m.steamId64.toString()) : []);
+
+function setupSteamNetworking() {
+  if (!steam) return;
+  steam.callback.register(CB.P2PSessionRequest, ({ remote }) => {
+    // Only talk to people in our lobby.
+    if (lobbyMembers().includes(remote.toString())) steam.networking.acceptP2PSession(remote);
+  });
+  steam.callback.register(CB.LobbyChatUpdate, (e) => {
+    if (!lobby || e.lobby !== lobby.id) return;
+    if (e.member_state_change !== MEMBER_ENTERED) toRenderer('steam:left', e.user_changed.toString());
+  });
+  steam.callback.register(CB.GameLobbyJoinRequested, (e) => toRenderer('steam:join-requested', e.lobby_steam_id.toString()));
+  setInterval(() => {
+    for (let size = steam.networking.isP2PPacketAvailable(); size > 0; size = steam.networking.isP2PPacketAvailable()) {
+      const packet = steam.networking.readP2PPacket(size);
+      toRenderer('steam:message', packet.steamId.steamId64.toString(), packet.data.toString('utf8'));
+    }
+  }, 16);
 }
+
+ipcMain.handle('steam:info', () => (steam ? { available: true, selfId: selfId(), name: steam.localplayer.getName() } : { available: false }));
+ipcMain.handle('steam:take-pending-join', () => {
+  const id = pendingJoin;
+  pendingJoin = null;
+  return id;
+});
+ipcMain.handle('steam:create-lobby', async () => {
+  lobby?.leave();
+  lobby = await steam.matchmaking.createLobby(1 /* FriendsOnly */, 4);
+  lobby.setData('game', 'domino-boricua');
+  return { lobbyId: lobby.id.toString(), selfId: selfId() };
+});
+ipcMain.handle('steam:join-lobby', async (_e, id) => {
+  lobby?.leave();
+  lobby = await steam.matchmaking.joinLobby(BigInt(id));
+  return { lobbyId: lobby.id.toString(), selfId: selfId(), hostId: lobby.getOwner().steamId64.toString() };
+});
+ipcMain.on('steam:leave-lobby', () => {
+  lobby?.leave();
+  lobby = null;
+});
+ipcMain.on('steam:invite', () => {
+  if (lobby) steam.overlay.activateInviteDialog(lobby.id);
+});
+ipcMain.on('steam:send', (_e, to, data) => {
+  if (steam && typeof data === 'string' && data.length < 1_000_000) {
+    steam.networking.sendP2PPacket(BigInt(to), RELIABLE, Buffer.from(data, 'utf8'));
+  }
+});
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -97,7 +166,7 @@ app.whenReady().then(() => {
     return new Response(fs.readFileSync(file), { headers: { 'content-type': type } });
   });
   Menu.setApplicationMenu(null);
-  initSteam();
+  setupSteamNetworking();
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

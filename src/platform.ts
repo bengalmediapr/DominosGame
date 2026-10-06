@@ -1,9 +1,13 @@
+import type { SteamBridge } from './net/transport';
+
 /** Bridge to the desktop shell (Electron preload). Falls back to browser behaviour. */
 export interface PlatformBridge {
   isDesktop: boolean;
   quit(): void;
   toggleFullscreen(): void;
   unlockAchievement(id: string): void;
+  /** Present in the desktop build; works only when the game was started through Steam. */
+  steam?: SteamBridge;
 }
 
 declare global {

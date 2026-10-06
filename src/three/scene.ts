@@ -450,7 +450,8 @@ export class TableScene {
         holder.add(tile);
         this.pickables.push(tile);
       } else {
-        const tile = makeTile(t[0], t[1]);
+        // Other players' tiles arrive hidden ([-1, -1]); only their backs are visible anyway.
+        const tile = t[0] < 0 ? makeTile(0, 0) : makeTile(t[0], t[1]);
         tile.rotation.x = Math.PI / 2;
         tile.position.y = 1;
         holder.add(tile);

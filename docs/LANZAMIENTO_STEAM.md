@@ -10,7 +10,9 @@ cambian: verifícalos en la documentación oficial antes de pagar o anunciar fec
 | Reglas de dominó puertorriqueño (parejas a 500, capicú, tranque, pollona) | ✅ con pruebas automáticas |
 | Modo **Ruleta Boricua** (cada cual por su cuenta, revólver de 6 recámaras) | ✅ con pruebas |
 | IA en 3 niveles (Fácil / Normal / Difícil) | ✅ |
-| Mesa 3D (Three.js): chinchorro, personajes, revólveres, cámara en primera persona | ✅ versión jugable |
+| Mesa 3D (Three.js): chinchorro, revólveres, cámara en primera persona | ✅ versión jugable |
+| Personajes 3D animados (KayKit, CC0) vestidos como boricuas | ✅ |
+| **Multijugador en línea por Steam** (mesas de amigos, 2 a 4 personas + IA) | ✅ código listo, falta probarlo con el App ID real |
 | Español / inglés, sonidos generados por código (sin licencias de audio) | ✅ |
 | App de escritorio (Electron) para Windows, macOS y Linux | ✅ |
 | Logros de Steam (`steamworks.js`) | ✅ código listo, falta configurarlos en Steamworks |
@@ -18,12 +20,9 @@ cambian: verifícalos en la documentación oficial antes de pagar o anunciar fec
 
 ## 2. Antes de vender: lo que falta (en orden de importancia)
 
-1. **Multijugador en línea con amigos.** Lo que hizo exitoso a juegos como Liar's Bar es jugar con
-   amigos por internet. `steamworks.js` ya trae lobbies y networking P2P de Steam, y el motor de reglas
-   está separado del UI, lo cual facilita sincronizar partidas. Es la siguiente gran tarea.
-2. **Arte final.** Los personajes y objetos son "arte de programador" hecho con figuras básicas. Para
-   vender, contrata a un artista 3D (personajes estilo vejigante, jíbaro, etc.) o compra modelos con
-   licencia comercial (formato glTF/GLB, que Three.js carga directamente).
+1. **Probar el multijugador en Steam de verdad** (ver sección 4b): dos computadoras, dos cuentas de Steam.
+2. **Más arte.** Los personajes ya son modelos animados (KayKit, CC0); la mesa, el cuarto y el
+   revólver siguen hechos con figuras básicas. Un artista 3D puede reemplazarlos (formato .glb).
 3. **Música.** Encarga música original (plena, bomba, salsa) o compra con licencia comercial.
 4. **Control (gamepad)** para Steam Deck "Verified" y jugar desde el sofá.
 5. **Steam Cloud** para guardar partidas entre computadoras.
@@ -59,6 +58,28 @@ cambian: verifícalos en la documentación oficial antes de pagar o anunciar fec
   (sin sangre). Decláralo honestamente en *Content Survey* (violencia); Steam pondrá el aviso y la
   verificación de edad que correspondan. No declararlo puede causar que retiren el juego.
 - **Clasificación por edad (IARC)**: opcional en Steam, pero necesaria para algunos países y otras tiendas.
+
+## 4b. Multijugador en línea (Steam)
+
+Cómo funciona:
+
+- El jugador que crea la mesa es el **anfitrión**: su juego es el único que corre las reglas. A los
+  demás les manda solo lo que pueden ver (sus fichas, no las de otros ni dónde está la bala), así que
+  nadie puede hacer trampa editando su copia del juego.
+- La mesa es un **lobby de Steam "solo amigos"** de 4 puestos. El botón *Invitar amigos de Steam* abre
+  el overlay de invitaciones. Si el amigo acepta con el juego cerrado, Steam lo abre con
+  `+connect_lobby <id>` y entra directo a la mesa.
+- Los mensajes van por la red P2P de Steam (con relay de Valve: no hace falta abrir puertos ni pagar servidores).
+- Si alguien se desconecta, la IA toma su silla. Si alguien no jala el gatillo en 25 s, se jala solo.
+
+En Steamworks no hay que configurar nada especial para los lobbies. Para probarlo antes del lanzamiento:
+
+1. Sube un build a una rama beta (SteamPipe) o usa `steam_appid.txt` en dos PCs.
+2. Abre el juego desde Steam en las dos computadoras, con dos cuentas que sean amigas.
+3. PC 1: *Jugar en línea → Crear mesa → Invitar amigos de Steam*. PC 2: acepta la invitación.
+
+Sin Steam se puede probar el flujo completo en una sola computadora: en la versión de navegador,
+*Jugar en línea → Prueba en esta computadora*, crea una mesa y únete desde otra pestaña con el código.
 
 ## 5. Arte para la página de la tienda
 
@@ -107,7 +128,14 @@ Sin App ID de Steam el juego corre normal (sin DRM), así que el mismo build sir
 - **GOG**: es curada: envías el juego para que lo evalúen.
 - **Microsoft Store (PC)**: cuenta de desarrollador; acepta apps Win32 empaquetadas.
 
-## 9. Precio sugerido
+## 9. Créditos y licencias de arte
+
+- Personajes y sillas: **KayKit** de Kay Lousberg (www.kaylousberg.com), licencia CC0. No exige crédito,
+  pero es buena práctica ponerlo en los créditos del juego. Los originales están en `assets-src/`
+  y `npm run models` genera las versiones optimizadas en `public/models/`.
+- Todo lo demás (mesa, cuarto, texturas, sonidos) se genera en código.
+
+## 10. Precio sugerido
 
 Para un juego de mesa con IA y modo ruleta, entre **$4.99 y $7.99**. Con multijugador en línea y arte
 final se puede justificar más. Un descuento de lanzamiento (10–20 %) ayuda a la visibilidad en Steam.

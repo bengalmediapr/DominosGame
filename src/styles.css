@@ -325,3 +325,55 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------- online: create / join / lobby ---------- */
+.btn.mode.online { background: rgba(0, 80, 240, 0.55); }
+.online-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  width: min(520px, 100%);
+  background: rgba(20, 8, 30, 0.55);
+  border-radius: 16px;
+  padding: 1rem 1.2rem 1.2rem;
+  z-index: 1;
+}
+.online-box h3 { margin: 0; font-family: var(--display); font-weight: 400; font-size: 1.4rem; }
+.online-box .note { margin: 0; text-align: center; }
+.join-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+.join-row input {
+  font: inherit;
+  font-family: var(--display);
+  font-size: 1.3rem;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  width: 7.5em;
+  padding: 0.35em 0.6em;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+}
+.join-row input:focus-visible { outline: none; border-color: var(--gold); }
+.notice { background: rgba(0, 0, 0, 0.55); padding: 0.4rem 1rem; border-radius: 10px; color: var(--gold); z-index: 1; }
+.lobby .code { font-size: 1.2rem; margin: 0; z-index: 1; }
+.lobby .code b { font-family: var(--display); font-weight: 400; font-size: 2rem; letter-spacing: 0.2em; color: var(--gold); }
+.seats { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.45rem; width: min(520px, 100%); z-index: 1; }
+.seat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  background: rgba(20, 8, 30, 0.6);
+  border-radius: 12px;
+  padding: 0.55rem 1rem;
+  border-left: 5px solid rgba(255, 255, 255, 0.25);
+}
+.seat-row.human { border-left-color: var(--gold); }
+.seat-row.team-0 { border-left-color: var(--team-0); }
+.seat-row.team-1 { border-left-color: var(--team-1); }
+.seat-row.ai .seat-name { opacity: 0.7; }
+.seat-tag { font-size: 0.85rem; background: rgba(255, 255, 255, 0.15); padding: 0.1rem 0.6rem; border-radius: 999px; }
+.lobby .row { flex-wrap: wrap; align-items: center; z-index: 1; }
+.tag.human .nameplate { border-color: rgba(255, 201, 60, 0.45); }

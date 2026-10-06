@@ -21,6 +21,12 @@ Doña Lola and Cheo.
   passed on and plays to starve opponents and feed its partner.
 - **Game UI** (`src/ui/`): HTML HUD over the 3D canvas, Spanish/English, synthesized sounds
   (tile clack, coquí, gunshot, empty-chamber click), no third-party audio.
+- **Online play** (`src/net/`): host-authoritative. `Table` runs the rules on the host and sends each
+  player a redacted snapshot (their own tiles only, no bullet positions); players send intents.
+  Transports: Steam friends-only lobbies + P2P (`electron/main.cjs`), and BroadcastChannel for
+  testing two tabs on one computer. Disconnected players are replaced by the AI.
+- **Characters**: KayKit (CC0) rigged models, trimmed by `npm run models` and re-dressed in code
+  (`src/three/characters.ts`).
 - **Desktop shell** (`electron/`): Electron app with optional Steamworks (achievements, overlay)
   via `steamworks.js`. Without a Steam App ID it runs as a normal DRM-free game (itch.io, GOG…).
 
@@ -31,7 +37,7 @@ npm install
 npm run dev        # browser at http://localhost:5173
 npm test           # engine + layout unit tests
 npm run app        # build and open the desktop app
-npx playwright test  # end-to-end: plays Ruleta (incl. the revolver) and Parejas in the browser
+npx playwright test  # end-to-end: Ruleta (incl. the revolver), Parejas, and two-tab online play
 ```
 
 ## Package
