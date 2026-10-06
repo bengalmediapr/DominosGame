@@ -2,7 +2,7 @@ export type Lang = 'es' | 'en';
 
 const strings = {
   es: {
-    title: 'Dominó Boricua',
+    title: 'Capicú',
     tagline: 'Pa’ la mesa, que se formó el dominó',
     play: 'Jugar',
     continue: 'Seguir',
@@ -107,7 +107,7 @@ const strings = {
     clickTiles: 'Haz clic en una ficha que brille (o usa 1–7)',
   },
   en: {
-    title: 'Dominó Boricua',
+    title: 'Capicú',
     tagline: 'Puerto Rican dominoes — pull up a chair',
     play: 'Play',
     continue: 'Continue',

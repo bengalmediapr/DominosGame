@@ -1,4 +1,4 @@
-# Cómo lanzar Dominó Boricua en Steam (y otras tiendas)
+# Cómo lanzar Capicú en Steam (y otras tiendas)
 
 Guía práctica para pasar de este repositorio a un juego a la venta. Los precios y plazos de las tiendas
 cambian: verifícalos en la documentación oficial antes de pagar o anunciar fechas.
@@ -106,7 +106,7 @@ npm run dist:steam       # genera release/<plataforma>-unpacked/
 
 Sube la carpeta `release/win-unpacked` (y `linux-unpacked` / `mac` si vendes en esas plataformas) con
 **SteamPipe** (`steamcmd` + un archivo `app_build_<appid>.vdf` que apunte a esa carpeta). El ejecutable
-de lanzamiento es `Dominó Boricua.exe`. Cada plataforma va en su propio *depot*.
+de lanzamiento es `Capicú.exe`. Cada plataforma va en su propio *depot*.
 
 Recomendado: firma el `.exe` con un certificado de *code signing* (evita la alerta de Windows
 SmartScreen fuera de Steam). Para macOS hace falta la cuenta de Apple Developer ($99/año) y "notarizar".
@@ -116,8 +116,9 @@ SmartScreen fuera de Steam). Para macOS hace falta la cuenta de Apple Developer 
 - **No uses "Liar's Bar"** en el título, etiquetas, capturas ni descripción, y no copies su arte. La mecánica
   de la ruleta no es de nadie, pero el nombre y el arte sí.
 - **No uses marcas reales** (Medalla, Don Q, Domino's, etc.). La lata de cerveza del juego es genérica a propósito.
-- Antes de imprimir nada, busca "Dominó Boricua" en Steam y en el USPTO (marcas registradas) por si ya
-  existe. Si está tomado, cámbialo en `package.json` (`productName`), `index.html` y `src/ui/i18n.ts`.
+- "Capicú" es una palabra común del dominó, así que puede haber otros juegos o marcas con ese nombre.
+  Antes de imprimir nada, búscalo en Steam y en el USPTO (marcas registradas). Si quieres algo más
+  distintivo para la tienda, se puede usar un subtítulo, p. ej. "Capicú: Dominó Boricua".
 
 ## 8. Otras tiendas para PC (el mismo build sirve)
 

@@ -99,7 +99,7 @@ class TabTransport implements Transport {
   private leftCbs: ((peer: string) => void)[] = [];
 
   constructor(readonly code: string, readonly selfId: string, readonly hostId: string) {
-    this.channel = new BroadcastChannel(`domino-boricua:${code}`);
+    this.channel = new BroadcastChannel(`capicu:${code}`);
     this.channel.onmessage = (e: MessageEvent<Envelope>) => {
       const { from, to, msg } = e.data;
       if (to !== this.selfId && to !== '*') return;

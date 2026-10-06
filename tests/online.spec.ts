@@ -11,7 +11,7 @@ const state = (page: Page) => page.evaluate(() => (window as unknown as { __domi
 
 async function open(page: Page) {
   await page.goto('/');
-  await page.evaluate(() => localStorage.setItem('domino-boricua.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 })));
+  await page.evaluate(() => localStorage.setItem('capicu.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 })));
   await page.reload();
   await page.locator('[data-action=online]').click();
 }

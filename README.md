@@ -1,4 +1,4 @@
-# Dominó Boricua
+# Capicú
 
 Puerto Rican–style dominoes in 3D for PC, built to ship on Steam and other PC stores.
 Set in a *chinchorro* (roadside bar) at night, against three AI rivals: Papo (vejigante mask),

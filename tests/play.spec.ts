@@ -11,9 +11,9 @@ const state = (page: Page) => page.evaluate(() => (window as unknown as { __domi
 async function setup(page: Page, errors: string[]) {
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto('/');
-  await page.evaluate(() => localStorage.setItem('domino-boricua.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 })));
+  await page.evaluate(() => localStorage.setItem('capicu.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 })));
   await page.reload();
-  await expect(page.locator('.logo')).toHaveText('Dominó Boricua');
+  await expect(page.locator('.logo')).toHaveText('Capicú');
 }
 
 /** Plays as the human using only the keyboard and the on-screen buttons. */

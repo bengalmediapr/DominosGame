@@ -1,4 +1,4 @@
-// Desktop shell for Dominó Boricua (Windows / macOS / Linux, incl. Steam Deck).
+// Desktop shell for Capicú (Windows / macOS / Linux, incl. Steam Deck).
 const { app, BrowserWindow, ipcMain, Menu, protocol } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -30,7 +30,7 @@ function readAppId() {
   return null;
 }
 
-// The product name ("Dominó") ends up in the User-Agent; HTTP headers must be ASCII.
+// The product name ("Capicú") ends up in the User-Agent; HTTP headers must be ASCII.
 app.userAgentFallback = app.userAgentFallback.normalize('NFD').replace(/[^\x20-\x7e]/g, '');
 
 // Many older or laptop GPUs are on Chromium's blocklist; the 3D table still runs fine on them.
@@ -99,7 +99,7 @@ ipcMain.handle('steam:take-pending-join', () => {
 ipcMain.handle('steam:create-lobby', async () => {
   lobby?.leave();
   lobby = await steam.matchmaking.createLobby(1 /* FriendsOnly */, 4);
-  lobby.setData('game', 'domino-boricua');
+  lobby.setData('game', 'capicu');
   return { lobbyId: lobby.id.toString(), selfId: selfId() };
 });
 ipcMain.handle('steam:join-lobby', async (_e, id) => {
@@ -127,7 +127,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 600,
     backgroundColor: '#241018',
-    title: 'Dominó Boricua',
+    title: 'Capicú',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
