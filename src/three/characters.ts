@@ -136,9 +136,21 @@ const LOOKS: Record<string, Look> = {
 /** Which look sits in which seat. Seat 0 is the host (or you, offline). */
 export const SEAT_LOOKS = ['wiso', 'papo', 'lola', 'cheo'] as const;
 
-function recolorAtlas(material: THREE.MeshStandardMaterial, swatches: Record<string, string>): void {
-  const src = material.map?.image as CanvasImageSource & { width: number; height: number } | undefined;
-  if (!src) return;
+const textureLoader = new THREE.TextureLoader();
+const textures = new Map<string, Promise<THREE.Texture>>();
+function loadTexture(file: string): Promise<THREE.Texture> {
+  if (!textures.has(file)) {
+    textures.set(file, textureLoader.loadAsync(`./models/${file}.png`).then((tex) => {
+      tex.flipY = false; // glTF UV convention
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }));
+  }
+  return textures.get(file)!;
+}
+
+function recolorAtlas(material: THREE.MeshStandardMaterial, atlas: THREE.Texture, swatches: Record<string, string>): void {
+  const src = atlas.image as CanvasImageSource & { width: number; height: number };
   const c = document.createElement('canvas');
   c.width = src.width;
   c.height = src.height;
@@ -166,8 +178,8 @@ function recolorAtlas(material: THREE.MeshStandardMaterial, swatches: Record<str
   const tex = new THREE.CanvasTexture(c);
   tex.flipY = false;
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.magFilter = material.map!.magFilter;
-  tex.minFilter = material.map!.minFilter;
+  tex.magFilter = atlas.magFilter;
+  tex.minFilter = atlas.minFilter;
   material.map = tex;
   material.needsUpdate = true;
 }
@@ -191,7 +203,7 @@ const AIM = {
 
 export async function loadAvatar(look: (typeof SEAT_LOOKS)[number], worldHeight: number): Promise<Avatar> {
   const spec = LOOKS[look];
-  const gltf = await loadModel(spec.file);
+  const [gltf, atlas] = await Promise.all([loadModel(spec.file), loadTexture(spec.file)]);
   const model = cloneSkinned(gltf.scene) as THREE.Group;
   const tint: THREE.MeshStandardMaterial[] = [];
   const recolored = new Map<THREE.Material, THREE.MeshStandardMaterial>();
@@ -203,7 +215,8 @@ export async function loadAvatar(look: (typeof SEAT_LOOKS)[number], worldHeight:
     const original = m.material as THREE.MeshStandardMaterial;
     if (!recolored.has(original)) {
       const copy = original.clone();
-      recolorAtlas(copy, spec.recolor);
+      copy.color.set('#ffffff');
+      recolorAtlas(copy, atlas, spec.recolor);
       recolored.set(original, copy);
       tint.push(copy);
     }
@@ -293,12 +306,19 @@ let chairModel: Promise<THREE.Group> | null = null;
  * down so a raised avatar's chair still reaches the floor.
  */
 export async function loadChair(worldHeight: number, legExtension = 0): Promise<THREE.Group> {
-  chairModel ??= loader.loadAsync('./models/chair.glb').then((g) => g.scene);
-  const chair = (await chairModel).clone();
-  chair.traverse((o) => {
-    const m = o as THREE.Mesh;
-    if (m.isMesh) m.castShadow = m.receiveShadow = true;
+  chairModel ??= Promise.all([loader.loadAsync('./models/chair.glb'), loadTexture('chair')]).then(([g, tex]) => {
+    g.scene.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.castShadow = m.receiveShadow = true;
+      const material = (m.material as THREE.MeshStandardMaterial).clone();
+      material.map = tex;
+      material.color.set('#ffffff');
+      m.material = material;
+    });
+    return g.scene;
   });
+  const chair = (await chairModel).clone();
   chair.scale.setScalar(worldHeight / SEATED_HEIGHT);
   chair.rotation.y = Math.PI; // match the avatars, which face -z
   if (legExtension > 0) {

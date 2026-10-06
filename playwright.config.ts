@@ -2,6 +2,9 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: 'tests',
+  testIgnore: '_*.spec.ts',
+  // Each test renders a full 3D scene; on CPU-only machines parallel runs starve each other.
+  workers: 1,
   timeout: 120_000,
   use: {
     baseURL: 'http://localhost:4173',

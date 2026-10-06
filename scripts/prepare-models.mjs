@@ -3,7 +3,14 @@
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { prune, dedup, quantize, resample } from '@gltf-transform/functions';
-import { mkdirSync, copyFileSync } from 'node:fs';
+import { mkdirSync, copyFileSync, writeFileSync } from 'node:fs';
+
+/** Textures ship as plain PNGs next to the models (loaded like any image, no blob: URLs). */
+function extractTexture(doc, pngPath) {
+  const textures = doc.getRoot().listTextures();
+  if (textures[0]) writeFileSync(pngPath, textures[0].getImage());
+  for (const tex of textures) tex.dispose();
+}
 
 const KEEP_ANIMATIONS = new Set(['Sit_Chair_Idle', 'Sit_Chair_Pose', 'Hit_A', 'Cheer', 'Interact']);
 const KEEP_PARTS = /(_Body|_Head|_ArmLeft|_ArmRight|_LegLeft|_LegRight)$/;
@@ -24,11 +31,15 @@ for (const name of CHARACTERS) {
   }
   // Weapons, shields, capes and hats: everything that isn't the body itself.
   for (const node of root.listNodes()) if (node.getMesh() && !KEEP_PARTS.test(node.getName())) node.dispose();
-  await doc.transform(resample(), prune(), dedup(), quantize());
+  extractTexture(doc, `public/models/${name}.png`);
+  // keepAttributes: the UVs must survive even though the texture now ships separately.
+  await doc.transform(resample(), prune({ keepAttributes: true }), dedup(), quantize());
   await io.write(`public/models/${name}.glb`, doc);
 }
 
 const chair = await io.read('assets-src/kaykit-furniture/chair_A_wood.gltf');
+extractTexture(chair, 'public/models/chair.png');
+await chair.transform(prune({ keepAttributes: true }));
 await io.write('public/models/chair.glb', chair);
 copyFileSync('assets-src/kaykit-characters/LICENSE.txt', 'public/models/LICENSE-kaykit.txt');
 console.log('models written to public/models');
