@@ -11,7 +11,10 @@ const state = (page: Page) => page.evaluate(() => (window as unknown as { __domi
 
 async function open(page: Page) {
   await page.goto('/');
-  await page.evaluate(() => localStorage.setItem('capicu.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 })));
+  await page.evaluate(() => {
+    localStorage.setItem('capicu.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 }));
+    localStorage.setItem('capicu.net', 'tabs'); // play tab-to-tab: the test machine has no internet broker
+  });
   await page.reload();
   await page.locator('[data-action=online]').click();
 }
@@ -32,7 +35,7 @@ test('two players at one table: host and guest play a hand together', async ({ b
 
   await open(host);
   await host.locator('[data-action=host-tabs]').click();
-  await expect(host.locator('.lobby .code b')).toHaveText(/^[A-Z0-9]{4}$/);
+  await expect(host.locator('.lobby .code b')).toHaveText(/^[A-Z0-9]{4,5}$/);
   const code = (await host.locator('.lobby .code b').textContent())!;
 
   await open(guest);

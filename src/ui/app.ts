@@ -4,7 +4,9 @@ import {
 import { Tile, handPips, sameTile } from '../engine/tiles';
 import { GuestSession, HostSession, LocalSession, Session, TableConfig } from '../net/session';
 import type { TableEvent } from '../net/table';
-import { SteamBridge, Transport, hostInTabs, hostOnSteam, joinInTabs, joinOnSteam } from '../net/transport';
+import {
+  NetError, SteamBridge, Transport, hostInTabs, hostOnInternet, hostOnSteam, joinInTabs, joinOnInternet, joinOnSteam,
+} from '../net/transport';
 import { View, toEngine } from '../net/view';
 import { ACHIEVEMENTS, platform } from '../platform';
 import { SEAT_LOOKS } from '../three/characters';
@@ -17,6 +19,15 @@ import { star } from './tileSvg';
 type Screen = 'menu' | 'options' | 'howto' | 'online' | 'lobby' | 'game';
 const ME = 0; // in every view you sit at seat 0
 const DELAYS = { slow: 1300, normal: 800, fast: 350 };
+
+/** Automated tests play tab-to-tab (BroadcastChannel) instead of over the internet. */
+function tabsOnly(): boolean {
+  try {
+    return localStorage.getItem('capicu.net') === 'tabs';
+  } catch {
+    return false;
+  }
+}
 
 interface Bubble { text: string; big?: boolean }
 
@@ -141,7 +152,9 @@ export class App {
     this.notice = t().connecting;
     this.render();
     try {
-      const transport: Transport & { code?: string } = viaSteam && this.steam ? await hostOnSteam(this.steam) : hostInTabs();
+      const transport: Transport & { code?: string } = viaSteam && this.steam
+        ? await hostOnSteam(this.steam)
+        : tabsOnly() ? hostInTabs() : await hostOnInternet();
       this.use(new HostSession(this.config(), transport, this.myName()));
       this.notice = null;
       this.screen = 'lobby';
@@ -150,6 +163,19 @@ export class App {
     } catch (err) {
       console.error(err);
       this.notice = t().couldNotConnect;
+      this.render();
+    }
+  }
+
+  private async joinByCode(code: string): Promise<void> {
+    if (tabsOnly()) return this.joinWith(joinInTabs(code));
+    this.notice = t().connecting;
+    this.render();
+    try {
+      this.joinWith(await joinOnInternet(code));
+    } catch (err) {
+      console.error(err);
+      this.notice = err instanceof NetError && err.reason === 'notFound' ? t().tableNotFound : t().couldNotConnect;
       this.render();
     }
   }
@@ -365,7 +391,7 @@ export class App {
     if (form.id !== 'join-form') return;
     e.preventDefault();
     const code = (form.querySelector('#join-code') as HTMLInputElement).value.trim();
-    if (code.length >= 4) this.joinWith(joinInTabs(code));
+    if (code.length >= 4) void this.joinByCode(code);
   }
 
   /** Leaving a local match keeps it saved; leaving an online table closes the connection. */
