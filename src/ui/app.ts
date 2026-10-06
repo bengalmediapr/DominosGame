@@ -18,8 +18,6 @@ const DELAYS = { slow: 1300, normal: 800, fast: 350 };
 
 interface Bubble { text: string; big?: boolean }
 
-const pickOne = <T>(items: readonly T[]): T => items[Math.floor(Math.random() * items.length)];
-
 export class App {
   private settings: Settings = loadSettings();
   private screen: Screen = 'menu';
@@ -194,7 +192,6 @@ export class App {
       this.roulette = { shooter, waitHuman: null };
       this.status = shooter === HUMAN ? s.youMustShoot : `${s.mustShoot} ${s.names[shooter]}`;
       this.bubbles = [null, null, null, null];
-      if (shooter !== HUMAN) this.say(shooter, pickOne(s.pain));
       if (shooter === HUMAN) {
         await new Promise<void>((resolve) => { this.roulette!.waitHuman = resolve; this.render(); });
       } else {
@@ -219,11 +216,8 @@ export class App {
         this.render();
         return;
       }
-      if (fired) this.status = `${s.names[shooter]} ${s.isOut}`;
-      else {
-        dryClick();
-        this.say(shooter, shooter === HUMAN ? s.youSurvived : pickOne(s.relief), true);
-      }
+      if (!fired) dryClick();
+      this.status = `${s.names[shooter]}: ${fired ? s.isOut : s.emptyChamber}`;
       this.render();
       await pause(1500);
       if (gen !== this.generation) return;
