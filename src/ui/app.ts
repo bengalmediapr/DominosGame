@@ -198,7 +198,8 @@ export class App {
   private onEvents(events: TableEvent[]): void {
     const s = t();
     if (this.session instanceof GuestSession && this.session.ended) {
-      this.notice = this.session.ended === 'full' ? s.tableFull : s.hostLeft;
+      const reason = this.session.ended;
+      this.notice = reason === 'full' ? s.tableFull : reason === 'notFound' ? s.tableNotFound : s.hostLeft;
       this.leaveSession(false);
       this.screen = 'online';
       this.scene.setMode('menu');

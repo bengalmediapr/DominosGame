@@ -36,8 +36,9 @@ test('two players at one table: host and guest play a hand together', async ({ b
   const code = (await host.locator('.lobby .code b').textContent())!;
 
   await open(guest);
-  await guest.locator('#join-code').fill(code);
-  await guest.locator('#join-form button[type=submit]').click();
+  await guest.locator('#join-code').click();
+  await guest.keyboard.type(code.toLowerCase());
+  await guest.keyboard.press('Enter');
 
   // The guest takes the partner's chair (seat 2) and both see the same lobby.
   await expect.poll(async () => (await state(host)).lobby?.seats.join(',')).toBe('human,ai,human,ai');
@@ -85,7 +86,8 @@ test('a guest who leaves is replaced by the AI', async ({ browser }) => {
   await host.locator('[data-action=host-tabs]').click();
   const code = (await host.locator('.lobby .code b').textContent())!;
   await open(guest);
-  await guest.locator('#join-code').fill(code);
+  await guest.locator('#join-code').click();
+  await guest.keyboard.type(code.toLowerCase());
   await guest.locator('#join-form button[type=submit]').click();
   await expect.poll(async () => (await state(host)).lobby?.seats[2]).toBe('human');
   await guest.close();

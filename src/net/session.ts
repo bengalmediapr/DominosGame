@@ -105,6 +105,9 @@ export class LocalSession extends Session {
 
 // ---------- online host ----------
 
+/** How long a guest waits for the host to answer before giving up. */
+export const GUEST_TIMEOUT_MS = 8000;
+
 /** Friends fill the partner's seat first, so two friends play as a team in parejas. */
 const JOIN_ORDER = [2, 1, 3];
 
@@ -225,8 +228,8 @@ export class GuestSession extends Session {
   private host: string;
   private lobbyState: { seats: SeatInfo[]; mode: Mode } | null = null;
   private offs: (() => void)[] = [];
-  /** Set when the host closes the table or the table is full. */
-  ended: 'full' | 'hostLeft' | null = null;
+  /** Set when the host closes the table, the table is full, or no table answers the code. */
+  ended: 'full' | 'hostLeft' | 'notFound' | null = null;
 
   constructor(private readonly transport: Transport, name: string) {
     super();
@@ -242,7 +245,11 @@ export class GuestSession extends Session {
       if (this.lobbyState || this.ended) clearInterval(retry);
       else transport.send(this.host, hello);
     }, 1000);
-    this.offs.push(() => clearInterval(retry));
+    // Nobody answered: wrong code, or the table is somewhere this transport can't reach.
+    const giveUp = setTimeout(() => {
+      if (!this.lobbyState && !this.snap && !this.ended) this.end('notFound');
+    }, GUEST_TIMEOUT_MS);
+    this.offs.push(() => clearInterval(retry), () => clearTimeout(giveUp));
   }
 
   private onMessage(from: string, msg: NetMessage): void {
@@ -262,7 +269,7 @@ export class GuestSession extends Session {
     }
   }
 
-  private end(reason: 'full' | 'hostLeft'): void {
+  private end(reason: 'full' | 'hostLeft' | 'notFound'): void {
     this.ended = reason;
     this.publish(null, []);
   }

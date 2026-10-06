@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_RULES, Mode, legalMoves } from '../engine/game';
-import { GuestSession, HostSession, TableConfig } from './session';
+import { GUEST_TIMEOUT_MS, GuestSession, HostSession, TableConfig } from './session';
 import { NetMessage, Transport } from './transport';
 
 /** An in-memory network: every transport sees messages addressed to it, delivered asynchronously. */
@@ -109,5 +109,19 @@ describe('online sessions', () => {
     vi.advanceTimersByTime(20);
     expect(g3.lobby()!.me).toBe(3);
     expect(g4.ended).toBe('full');
+  });
+});
+
+describe('joining a table that does not answer', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('gives up after a few seconds instead of connecting forever', () => {
+    const hub = new Hub();
+    const lost = new GuestSession(new MemoryTransport(hub, 'G1', 'NOBODY'), 'Beto');
+    vi.advanceTimersByTime(GUEST_TIMEOUT_MS - 100);
+    expect(lost.ended).toBeNull();
+    vi.advanceTimersByTime(200);
+    expect(lost.ended).toBe('notFound');
   });
 });
