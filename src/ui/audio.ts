@@ -76,3 +76,70 @@ export function fanfare(win: boolean): void {
     osc.stop(at + 0.55);
   });
 }
+
+function noise(a: AudioContext, seconds: number, decay: number): AudioBufferSourceNode {
+  const buf = a.createBuffer(1, Math.floor(a.sampleRate * seconds), a.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, decay);
+  const src = a.createBufferSource();
+  src.buffer = buf;
+  return src;
+}
+
+/** Revolver shot: sharp crack plus a low, rumbling room tail. */
+export function bang(): void {
+  const a = audio();
+  if (!a) return;
+  const crack = noise(a, 0.25, 4);
+  const crackGain = a.createGain();
+  crackGain.gain.value = volume * 2.2;
+  crack.connect(crackGain).connect(a.destination);
+  const tail = noise(a, 1.6, 2.5);
+  const low = a.createBiquadFilter();
+  low.type = 'lowpass';
+  low.frequency.value = 500;
+  const tailGain = a.createGain();
+  tailGain.gain.value = volume * 1.6;
+  tail.connect(low).connect(tailGain).connect(a.destination);
+  const thump = a.createOscillator();
+  const thumpGain = a.createGain();
+  thump.frequency.setValueAtTime(120, a.currentTime);
+  thump.frequency.exponentialRampToValueAtTime(30, a.currentTime + 0.4);
+  thumpGain.gain.setValueAtTime(volume * 1.5, a.currentTime);
+  thumpGain.gain.exponentialRampToValueAtTime(0.001, a.currentTime + 0.5);
+  thump.connect(thumpGain).connect(a.destination);
+  crack.start();
+  tail.start();
+  thump.start();
+  thump.stop(a.currentTime + 0.55);
+}
+
+/** Empty chamber. */
+export function dryClick(): void {
+  const a = audio();
+  if (!a) return;
+  const src = noise(a, 0.03, 8);
+  const hp = a.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 3000;
+  const g = a.createGain();
+  g.gain.value = volume * 2;
+  src.connect(hp).connect(g).connect(a.destination);
+  src.start();
+}
+
+/** Cylinder spinning: a quick run of ratchet ticks. */
+export function spin(): void {
+  const a = audio();
+  if (!a) return;
+  for (let i = 0; i < 12; i++) {
+    const src = noise(a, 0.012, 6);
+    const hp = a.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 4000;
+    const g = a.createGain();
+    g.gain.value = volume * 0.6;
+    src.connect(hp).connect(g).connect(a.destination);
+    src.start(a.currentTime + i * 0.035 * (1 + i * 0.08));
+  }
+}

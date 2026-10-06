@@ -1,5 +1,5 @@
 import {
-  Rng, Tile, createDeck, handPips, hasValue, isDouble, sameTile, shuffle,
+  Rng, Tile, createDeck, handPips, hasValue, isDouble, pipCount, sameTile, shuffle,
 } from './tiles';
 
 /**
@@ -11,15 +11,22 @@ import {
  *  - The team that goes out ("¡Dominó!") scores the pips left in every hand (configurable).
  *  - Capicú: winning with a tile that fits both (different) ends earns a bonus.
  *  - Tranque (blocked game): lowest individual count wins for their team; a cross-team tie scores nothing.
+ *
+ * "Ruleta" mode (Liar's Bar style): every player for themselves. Whoever ends a hand holding the most
+ * pips must pull the trigger of their own revolver (see roulette.ts). The dead leave the table; the
+ * hands keep being dealt (7 tiles each, the rest sit out) until one player is left alive.
  */
+export type Mode = 'parejas' | 'ruleta';
+
 export interface Rules {
+  mode: Mode;
   targetScore: number;
   capicuBonus: number;
   /** true: winners collect pips from all four hands; false: only from the losing team. */
   countAllHands: boolean;
 }
 
-export const DEFAULT_RULES: Rules = { targetScore: 500, capicuBonus: 100, countAllHands: true };
+export const DEFAULT_RULES: Rules = { mode: 'parejas', targetScore: 500, capicuBonus: 100, countAllHands: true };
 
 export const PLAYERS = 4;
 export type Team = 0 | 1;
@@ -27,6 +34,9 @@ export type Side = 'left' | 'right';
 
 export const teamOf = (player: number): Team => (player % 2) as Team;
 export const partnerOf = (player: number): number => (player + 2) % PLAYERS;
+/** Who a player plays for: their team in parejas, themselves in ruleta. */
+export const sideOf = (rules: Rules, player: number): number => (rules.mode === 'parejas' ? teamOf(player) : player);
+const ALL_SEATED = [true, true, true, true];
 
 export interface Move {
   tile: Tile;
@@ -54,7 +64,10 @@ export interface HandResult {
   reason: 'domino' | 'tranque';
   /** Player who went out, or the lowest count in a tranque; null on a tied tranque. */
   winnerPlayer: number | null;
+  /** Parejas only (null in ruleta). */
   winnerTeam: Team | null;
+  /** Ruleta: players left holding the most pips, who must face the revolver. */
+  losers: number[];
   points: number;
   capicu: boolean;
   pipCounts: number[];
@@ -67,6 +80,8 @@ export interface HandState {
   rightEnd: number | null;
   current: number;
   starter: number;
+  /** Players dealt into this hand (everyone in parejas; the living in ruleta). */
+  seated: boolean[];
   /** Tile the opening move must use (double six on the first hand). */
   mustOpenWith: Tile | null;
   passes: PassEvent[];
@@ -82,19 +97,49 @@ export interface MatchState {
   winnerTeam: Team | null;
   /** Winner reached the target while the losers scored nothing. */
   pollona: boolean;
+  /** Ruleta: who is still alive, their revolvers, and the last one standing. */
+  alive: boolean[];
+  revolvers: Revolver[];
+  winnerPlayer: number | null;
+  /** Ruleta: players who still have to pull the trigger for the last hand. */
+  pendingShooters: number[];
 }
 
-export function dealHand(rng: Rng, starter: number | null): HandState {
+export interface Revolver {
+  /** Chamber holding the bullet (0-5), fixed for the whole match: the cylinder is never re-spun. */
+  bullet: number;
+  pulls: number;
+}
+
+export const CHAMBERS = 6;
+
+export function nextSeated(seated: readonly boolean[], player: number): number {
+  for (let i = 1; i <= PLAYERS; i++) {
+    const p = (player + i) % PLAYERS;
+    if (seated[p]) return p;
+  }
+  return player;
+}
+
+/**
+ * Deals 7 tiles to each seated player. With `starter` null the hand is opened with the highest
+ * double dealt (the double six when everyone is seated), or the heaviest tile if nobody has a double.
+ */
+export function dealHand(rng: Rng, starter: number | null, seated: readonly boolean[] = ALL_SEATED): HandState {
   const deck = shuffle(createDeck(), rng);
-  const hands = Array.from({ length: PLAYERS }, (_, p) => deck.slice(p * 7, p * 7 + 7));
+  let next = 0;
+  const hands = seated.map((s) => (s ? deck.slice(next * 7, ++next * 7) : []));
   let mustOpenWith: Tile | null = null;
   if (starter === null) {
-    mustOpenWith = [6, 6];
-    starter = hands.findIndex((h) => h.some((t) => sameTile(t, [6, 6])));
+    const dealt = hands.flat();
+    const doubles = dealt.filter(isDouble);
+    const pool = doubles.length ? doubles : dealt;
+    mustOpenWith = pool.reduce((best, t) => (pipCount(t) > pipCount(best) ? t : best));
+    starter = hands.findIndex((h) => h.some((t) => sameTile(t, mustOpenWith!)));
   }
   return {
-    hands, placements: [], leftEnd: null, rightEnd: null,
-    current: starter, starter, mustOpenWith, passes: [], result: null,
+    hands, placements: [], leftEnd: null, rightEnd: null, current: starter, starter,
+    seated: [...seated], mustOpenWith, passes: [], result: null,
   };
 }
 
@@ -128,26 +173,32 @@ function scoreHand(hands: Tile[][], winnerTeam: Team, rules: Rules): number {
   return hands.reduce((sum, h, p) => (rules.countAllHands || teamOf(p) !== winnerTeam ? sum + handPips(h) : sum), 0);
 }
 
-export function resolveTranque(hands: Tile[][], rules: Rules): HandResult {
+/** Ruleta: the seated players (other than the winner) holding the most pips. */
+function losersOf(hands: Tile[][], seated: readonly boolean[], winner: number | null): number[] {
+  const counts = hands.map((h, p) => (seated[p] && p !== winner ? handPips(h) : -1));
+  const high = Math.max(...counts);
+  return counts.map((c, p) => (c === high && c >= 0 ? p : -1)).filter((p) => p >= 0);
+}
+
+export function resolveTranque(hands: Tile[][], rules: Rules, seated: readonly boolean[] = ALL_SEATED): HandResult {
   const pipCounts = hands.map(handPips);
-  const low = Math.min(...pipCounts);
-  const lowest = pipCounts.map((c, p) => (c === low ? p : -1)).filter((p) => p >= 0);
-  const teams = new Set(lowest.map(teamOf));
-  if (teams.size > 1) {
-    return { reason: 'tranque', winnerPlayer: null, winnerTeam: null, points: 0, capicu: false, pipCounts };
+  const low = Math.min(...pipCounts.filter((_, p) => seated[p]));
+  const lowest = pipCounts.map((c, p) => (seated[p] && c === low ? p : -1)).filter((p) => p >= 0);
+  const sides = new Set(lowest.map((p) => sideOf(rules, p)));
+  const winnerPlayer = sides.size > 1 ? null : lowest[0];
+  const base = { reason: 'tranque' as const, winnerPlayer, capicu: false, pipCounts };
+  if (rules.mode === 'ruleta') {
+    return { ...base, winnerTeam: null, points: 0, losers: losersOf(hands, seated, winnerPlayer) };
   }
-  const winnerPlayer = lowest[0];
+  if (winnerPlayer === null) return { ...base, winnerTeam: null, points: 0, losers: [] };
   const winnerTeam = teamOf(winnerPlayer);
-  return {
-    reason: 'tranque', winnerPlayer, winnerTeam,
-    points: scoreHand(hands, winnerTeam, rules), capicu: false, pipCounts,
-  };
+  return { ...base, winnerTeam, points: scoreHand(hands, winnerTeam, rules), losers: [] };
 }
 
 /** Nobody at the table can play: the hand is locked ("tranque"). */
 export function isBlocked(state: HandState): boolean {
   if (state.placements.length === 0) return false;
-  return state.hands.every((_, p) => movesFor(state, p).length === 0);
+  return state.hands.every((_, p) => !state.seated[p] || movesFor(state, p).length === 0);
 }
 
 export function applyMove(state: HandState, move: Move, rules: Rules): HandState {
@@ -172,21 +223,28 @@ export function applyMove(state: HandState, move: Move, rules: Rules): HandState
   const next: HandState = {
     ...state, hands, leftEnd, rightEnd,
     placements: [...state.placements, placement],
-    current: (player + 1) % PLAYERS,
+    current: nextSeated(state.seated, player),
   };
 
   if (hands[player].length === 0) {
-    const winnerTeam = teamOf(player);
     const capicu = isCapicu(move.tile, state.leftEnd ?? -1, state.rightEnd ?? -1, state.placements.length);
+    const pipCounts = hands.map(handPips);
     next.current = player;
-    next.result = {
-      reason: 'domino', winnerPlayer: player, winnerTeam, capicu,
-      points: scoreHand(hands, winnerTeam, rules) + (capicu ? rules.capicuBonus : 0),
-      pipCounts: hands.map(handPips),
-    };
+    if (rules.mode === 'ruleta') {
+      next.result = {
+        reason: 'domino', winnerPlayer: player, winnerTeam: null, capicu, points: 0, pipCounts,
+        losers: losersOf(hands, state.seated, player),
+      };
+    } else {
+      const winnerTeam = teamOf(player);
+      next.result = {
+        reason: 'domino', winnerPlayer: player, winnerTeam, capicu, pipCounts, losers: [],
+        points: scoreHand(hands, winnerTeam, rules) + (capicu ? rules.capicuBonus : 0),
+      };
+    }
   } else if (isBlocked(next)) {
     next.current = player;
-    next.result = resolveTranque(hands, rules);
+    next.result = resolveTranque(hands, rules, state.seated);
   }
   return next;
 }
@@ -197,7 +255,7 @@ export function pass(state: HandState): HandState {
   return {
     ...state,
     passes: [...state.passes, { player: state.current, leftEnd: state.leftEnd!, rightEnd: state.rightEnd! }],
-    current: (state.current + 1) % PLAYERS,
+    current: nextSeated(state.seated, state.current),
   };
 }
 
@@ -205,13 +263,21 @@ export function newMatch(rng: Rng, rules: Rules = DEFAULT_RULES): MatchState {
   return {
     rules, scores: [0, 0], handNumber: 1, hand: dealHand(rng, null),
     history: [], winnerTeam: null, pollona: false,
+    alive: [...ALL_SEATED],
+    revolvers: ALL_SEATED.map(() => ({ bullet: Math.floor(rng() * CHAMBERS), pulls: 0 })),
+    winnerPlayer: null,
+    pendingShooters: [],
   };
 }
 
-/** Adds the finished hand's points to the score and checks for a match winner. */
+export const isMatchOver = (m: MatchState): boolean => m.winnerTeam !== null || m.winnerPlayer !== null;
+
+/** Records the finished hand; in parejas adds its points and checks for a match winner. */
 export function scoreFinishedHand(match: MatchState): MatchState {
   const result = match.hand.result;
   if (!result) throw new Error('Hand not finished');
+  const history = [...match.history, result];
+  if (match.rules.mode === 'ruleta') return { ...match, history, pendingShooters: result.losers.filter((p) => match.alive[p]) };
   const scores: [number, number] = [...match.scores];
   if (result.winnerTeam !== null) scores[result.winnerTeam] += result.points;
   let winnerTeam: Team | null = null;
@@ -219,11 +285,30 @@ export function scoreFinishedHand(match: MatchState): MatchState {
     winnerTeam = scores[0] >= scores[1] ? 0 : 1;
   }
   const pollona = winnerTeam !== null && scores[1 - winnerTeam] === 0;
-  return { ...match, scores, history: [...match.history, result], winnerTeam, pollona };
+  return { ...match, scores, history, winnerTeam, pollona };
+}
+
+/** Chance the next pull of this player's revolver fires. */
+export const fireChance = (r: Revolver): number => 1 / (CHAMBERS - r.pulls);
+
+/** Ruleta: the player puts the revolver to their head and pulls. */
+export function pullTrigger(match: MatchState, player: number): { match: MatchState; fired: boolean } {
+  if (!match.alive[player]) throw new Error('Player is already out');
+  const gun = match.revolvers[player];
+  const fired = gun.pulls === gun.bullet;
+  const revolvers = match.revolvers.map((r, p) => (p === player ? { ...r, pulls: r.pulls + 1 } : r));
+  const alive = match.alive.map((a, p) => (p === player ? !fired : a));
+  const living = alive.map((a, p) => (a ? p : -1)).filter((p) => p >= 0);
+  const winnerPlayer = living.length === 1 ? living[0] : match.winnerPlayer;
+  const pendingShooters = match.pendingShooters.filter((p) => p !== player);
+  return { match: { ...match, revolvers, alive, winnerPlayer, pendingShooters }, fired };
 }
 
 export function startNextHand(match: MatchState, rng: Rng): MatchState {
   const last = match.history[match.history.length - 1];
-  const starter = last?.winnerPlayer ?? (match.hand.starter + 1) % PLAYERS;
-  return { ...match, handNumber: match.handNumber + 1, hand: dealHand(rng, starter) };
+  const seated = match.rules.mode === 'ruleta' ? match.alive : ALL_SEATED;
+  let starter: number | null;
+  if (last?.winnerPlayer != null && seated[last.winnerPlayer]) starter = last.winnerPlayer;
+  else starter = nextSeated(seated, match.hand.starter);
+  return { ...match, handNumber: match.handNumber + 1, hand: dealHand(rng, starter, seated) };
 }

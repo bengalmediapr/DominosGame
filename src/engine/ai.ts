@@ -1,5 +1,5 @@
 import {
-  HandState, Move, PLAYERS, Rules, applyMove, legalMoves, movesFor, partnerOf, teamOf,
+  HandState, Move, PLAYERS, Rules, applyMove, legalMoves, movesFor, nextSeated, sideOf,
 } from './game';
 import { Rng, hasValue, isDouble, pipCount } from './tiles';
 
@@ -20,8 +20,10 @@ function scoreMove(state: HandState, move: Move, rules: Rules, difficulty: Diffi
   const after = applyMove(state, move, rules);
   const result = after.result;
   if (result) {
-    if (result.winnerTeam === teamOf(me)) return 10_000 + result.points;
-    if (result.winnerTeam === null) return difficulty === 'hard' ? -200 : 0;
+    const mine = sideOf(rules, me);
+    if (rules.mode === 'ruleta' && result.losers.includes(me)) return difficulty === 'easy' ? 0 : -20_000;
+    if (result.winnerPlayer !== null && sideOf(rules, result.winnerPlayer) === mine) return 10_000 + result.points;
+    if (result.winnerPlayer === null) return difficulty === 'hard' ? -200 : 0;
     return difficulty === 'hard' ? -10_000 : 0;
   }
 
@@ -35,13 +37,14 @@ function scoreMove(state: HandState, move: Move, rules: Rules, difficulty: Diffi
 
   if (difficulty === 'hard') {
     const voids = knownVoids(state);
-    const nextOpponent = (me + 1) % PLAYERS;
-    const otherOpponent = (me + 3) % PLAYERS;
-    const partner = partnerOf(me);
-    for (const e of ends) {
-      if (voids[nextOpponent].has(e)) score += 6;
-      if (voids[otherOpponent].has(e)) score += 3;
-      if (voids[partner].has(e)) score -= 4;
+    const nextOpponent = nextSeated(state.seated, me);
+    for (let p = 0; p < PLAYERS; p++) {
+      if (p === me || !state.seated[p]) continue;
+      const ally = sideOf(rules, p) === sideOf(rules, me);
+      for (const e of ends) {
+        if (!voids[p].has(e)) continue;
+        score += ally ? -4 : p === nextOpponent ? 6 : 3;
+      }
     }
     // Lock a number I control: few tiles of it remain outside my hand.
     for (const e of new Set(ends)) {

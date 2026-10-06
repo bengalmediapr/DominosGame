@@ -1,22 +1,24 @@
 import { chooseMove } from '../engine/ai';
 import {
-  HandResult, MatchState, Move, Rules, Side, applyMove, legalMoves, newMatch, pass,
-  scoreFinishedHand, startNextHand, teamOf,
+  CHAMBERS, HandResult, MatchState, Mode, Move, Rules, Side, applyMove, fireChance, isMatchOver, legalMoves,
+  newMatch, pass, pullTrigger, scoreFinishedHand, startNextHand, teamOf,
 } from '../engine/game';
 import { Tile, handPips, sameTile } from '../engine/tiles';
 import { ACHIEVEMENTS, platform } from '../platform';
-import { clack, coqui, fanfare, setVolume } from './audio';
+import { TableScene } from '../three/scene';
+import { bang, clack, coqui, dryClick, fanfare, setVolume, spin } from './audio';
 import { setLang, t } from './i18n';
-import { layoutBoard } from './layout';
 import { Settings, loadSavedMatch, loadSettings, saveMatch, saveSettings } from './settings';
-import { star, tileBackMarkup, tileMarkup } from './tileSvg';
+import { star } from './tileSvg';
 
 type Screen = 'menu' | 'options' | 'howto' | 'game';
+type Overlay = 'hand' | 'match' | 'dead' | null;
 const HUMAN = 0;
-const SEATS = ['bottom', 'right', 'top', 'left'] as const;
 const DELAYS = { slow: 1300, normal: 800, fast: 350 };
 
 interface Bubble { text: string; big?: boolean }
+
+const pickOne = <T>(items: readonly T[]): T => items[Math.floor(Math.random() * items.length)];
 
 export class App {
   private settings: Settings = loadSettings();
@@ -24,33 +26,52 @@ export class App {
   private match: MatchState | null = null;
   private selected: Tile | null = null;
   private bubbles: (Bubble | null)[] = [null, null, null, null];
-  private overlay: 'hand' | 'match' | null = null;
-  private shake: Tile | null = null;
-  /** Placement index to animate on the next render only (so re-renders don't replay it). */
-  private freshIndex = -1;
+  private overlay: Overlay = null;
   private animateOverlay = false;
+  /** Set while the revolver sequence runs; `waitHuman` resolves when the human pulls the trigger. */
+  private roulette: { shooter: number; waitHuman: (() => void) | null } | null = null;
+  private status: string | null = null;
   /** Bumped whenever play is abandoned so stale timers do nothing. */
   private generation = 0;
+  private readonly scene: TableScene;
+  private readonly ui: HTMLElement;
 
-  constructor(private readonly root: HTMLElement, private readonly rng: () => number = Math.random) {
+  constructor(root: HTMLElement, private readonly rng: () => number = Math.random) {
     setLang(this.settings.lang);
     setVolume(this.settings.volume);
+    root.innerHTML = '<canvas class="gl"></canvas><div class="ui"></div>';
+    this.ui = root.querySelector('.ui')!;
+    this.scene = new TableScene(root.querySelector('canvas')!);
+    this.scene.onPick = (p) => (p.kind === 'tile' ? this.tryTile(p.tile) : this.chooseSide(p.side));
+    this.scene.onFrame = () => this.positionTags();
     const saved = loadSavedMatch<MatchState>();
-    if (saved && saved.winnerTeam === null && saved.hand?.hands?.length === 4) this.match = saved;
+    if (saved && saved.hand?.seated && saved.pendingShooters && !this.isOver(saved)) this.match = saved;
     root.addEventListener('click', (e) => this.onClick(e));
     window.addEventListener('keydown', (e) => this.onKey(e));
+    (window as unknown as { __domino: unknown }).__domino = { state: () => this.debugState() };
     this.render();
   }
 
   // ---------- flow ----------
 
-  private rules(): Rules {
+  private rules(mode: Mode): Rules {
     const s = this.settings;
-    return { targetScore: s.targetScore, capicuBonus: s.capicuBonus ? 100 : 0, countAllHands: s.countAllHands };
+    return { mode, targetScore: s.targetScore, capicuBonus: s.capicuBonus ? 100 : 0, countAllHands: s.countAllHands };
   }
 
-  private startMatch(): void {
-    this.match = newMatch(this.rng, this.rules());
+  private get ruleta(): boolean {
+    return this.match?.rules.mode === 'ruleta';
+  }
+
+  /** Over for the human: someone won, or the human is dead. */
+  private isOver(m: MatchState): boolean {
+    return isMatchOver(m) || (m.rules.mode === 'ruleta' && !m.alive[HUMAN]);
+  }
+
+  private startMatch(mode: Mode): void {
+    this.match = newMatch(this.rng, this.rules(mode));
+    this.scene.resetMatch();
+    saveMatch(this.match);
     this.enterGame();
     const opener = this.match.hand.current;
     this.say(opener, `${t().names[opener]} ${t().opens}`);
@@ -59,21 +80,33 @@ export class App {
   private enterGame(): void {
     this.generation++;
     this.screen = 'game';
-    this.overlay = this.match?.hand.result ? (this.match.winnerTeam !== null ? 'match' : 'hand') : null;
+    this.roulette = null;
+    this.status = null;
+    const m = this.match!;
+    this.overlay = m.hand.result ? (this.isOver(m) ? (m.alive[HUMAN] ? 'match' : 'dead') : 'hand') : null;
     this.selected = null;
     this.bubbles = [null, null, null, null];
+    this.scene.setMode('game');
     coqui();
     this.render();
     this.schedule(this.delay() * 1.5);
+  }
+
+  private toMenu(): void {
+    this.generation++;
+    this.roulette = null;
+    this.screen = 'menu';
+    this.scene.setMode('menu');
+    this.render();
   }
 
   private delay(): number {
     return DELAYS[this.settings.speed];
   }
 
-  private schedule(ms: number): void {
+  private schedule(ms: number, fn: () => void = () => this.step()): void {
     const gen = this.generation;
-    window.setTimeout(() => { if (gen === this.generation) this.step(); }, ms);
+    window.setTimeout(() => { if (gen === this.generation) fn(); }, ms);
   }
 
   private setHand(next: MatchState['hand']): void {
@@ -85,21 +118,13 @@ export class App {
   /** Advance whoever's turn it is. */
   private step(): void {
     const m = this.match;
-    if (!m || this.screen !== 'game' || m.hand.result || this.overlay) return;
+    if (!m || this.screen !== 'game' || m.hand.result || this.overlay || this.roulette) return;
     const h = m.hand;
-    const moves = legalMoves(h);
-    if (h.current === HUMAN) {
-      if (moves.length === 0) {
-        this.say(HUMAN, t().pass);
-        this.setHand(pass(h));
-        this.render();
-        this.schedule(this.delay());
-      } else {
-        this.render();
-      }
+    if (h.current === HUMAN && legalMoves(h).length > 0) {
+      this.render();
       return;
     }
-    const move = chooseMove(h, m.rules, this.settings.difficulty, this.rng);
+    const move = h.current === HUMAN ? null : chooseMove(h, m.rules, this.settings.difficulty, this.rng);
     if (move) this.play(move);
     else {
       this.say(h.current, t().pass);
@@ -112,7 +137,6 @@ export class App {
   private play(move: Move): void {
     const h = this.match!.hand;
     this.selected = null;
-    this.freshIndex = h.placements.length;
     this.setHand(applyMove(h, move, this.match!.rules));
     clack(this.match!.hand.result !== null);
     this.render();
@@ -121,38 +145,105 @@ export class App {
 
   private finishHand(result: HandResult): void {
     const s = t();
-    if (result.reason === 'domino') {
-      this.say(result.winnerPlayer!, result.capicu ? s.capicu : s.domino, true);
-    } else {
-      this.bubbles = [null, null, null, null];
-      if (result.winnerPlayer !== null) this.say(result.winnerPlayer, s.tranque, true);
-    }
+    this.bubbles = [null, null, null, null];
+    if (result.reason === 'domino') this.say(result.winnerPlayer!, result.capicu ? s.capicu : s.domino, true);
+    else if (result.winnerPlayer !== null) this.say(result.winnerPlayer, s.tranque, true);
     this.match = scoreFinishedHand(this.match!);
-    const weWon = result.winnerTeam === teamOf(HUMAN);
-    if (weWon) {
+    const m = this.match;
+    const humanWonHand = result.winnerPlayer !== null
+      && (this.ruleta ? result.winnerPlayer === HUMAN : result.winnerTeam === teamOf(HUMAN));
+    if (humanWonHand) {
       platform.unlockAchievement(ACHIEVEMENTS.firstHand);
       if (result.capicu) platform.unlockAchievement(ACHIEVEMENTS.capicu);
       if (result.reason === 'tranque') platform.unlockAchievement(ACHIEVEMENTS.tranque);
     }
-    const m = this.match;
-    if (m.winnerTeam !== null) {
-      const matchWon = m.winnerTeam === teamOf(HUMAN);
-      if (matchWon) {
+    if (!this.ruleta && m.winnerTeam !== null) {
+      const won = m.winnerTeam === teamOf(HUMAN);
+      if (won) {
         platform.unlockAchievement(ACHIEVEMENTS.firstMatch);
         if (m.pollona) platform.unlockAchievement(ACHIEVEMENTS.pollona);
         if (this.settings.difficulty === 'hard') platform.unlockAchievement(ACHIEVEMENTS.hardWin);
       }
-      fanfare(matchWon);
-    } else {
-      fanfare(weWon);
+      fanfare(won);
+    } else if (!this.ruleta) {
+      fanfare(humanWonHand);
     }
-    const gen = this.generation;
-    window.setTimeout(() => {
-      if (gen !== this.generation) return;
-      this.overlay = m.winnerTeam !== null ? 'match' : 'hand';
+    this.schedule(1400, () => {
+      this.overlay = !this.ruleta && m.winnerTeam !== null ? 'match' : 'hand';
       this.animateOverlay = true;
       this.render();
-    }, 1400);
+    });
+  }
+
+  /** "Next" on the hand result card: in ruleta, the losers face the revolver first. */
+  private continueAfterHand(): void {
+    this.overlay = null;
+    if (this.ruleta && this.match!.pendingShooters.length > 0) {
+      void this.runRoulette();
+      return;
+    }
+    this.nextHand();
+  }
+
+  private async runRoulette(): Promise<void> {
+    const gen = this.generation;
+    const s = t();
+    const pause = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+    while (this.match && this.match.pendingShooters.length > 0) {
+      const shooter = this.match.pendingShooters[0];
+      this.roulette = { shooter, waitHuman: null };
+      this.status = shooter === HUMAN ? s.youMustShoot : `${s.mustShoot} ${s.names[shooter]}`;
+      this.bubbles = [null, null, null, null];
+      if (shooter !== HUMAN) this.say(shooter, pickOne(s.pain));
+      if (shooter === HUMAN) {
+        await new Promise<void>((resolve) => { this.roulette!.waitHuman = resolve; this.render(); });
+      } else {
+        this.render();
+        await pause(1100);
+      }
+      if (gen !== this.generation) return;
+      this.roulette.waitHuman = null;
+      this.status = null;
+      const { match, fired } = pullTrigger(this.match, shooter);
+      this.render();
+      spin();
+      await this.scene.roulette(shooter, fired, () => bang());
+      if (gen !== this.generation) return;
+      this.match = match;
+      saveMatch(match);
+      if (fired && shooter === HUMAN) {
+        this.roulette = null;
+        this.overlay = 'dead';
+        this.animateOverlay = true;
+        fanfare(false);
+        this.render();
+        return;
+      }
+      if (fired) this.status = `${s.names[shooter]} ${s.isOut}`;
+      else {
+        dryClick();
+        this.say(shooter, shooter === HUMAN ? s.youSurvived : pickOne(s.relief), true);
+      }
+      this.render();
+      await pause(1500);
+      if (gen !== this.generation) return;
+    }
+    if (!this.match) return;
+    this.roulette = null;
+    this.status = null;
+    if (this.match.winnerPlayer !== null) {
+      const won = this.match.winnerPlayer === HUMAN;
+      if (won) {
+        platform.unlockAchievement(ACHIEVEMENTS.firstMatch);
+        if (this.settings.difficulty === 'hard') platform.unlockAchievement(ACHIEVEMENTS.hardWin);
+      }
+      fanfare(won);
+      this.overlay = 'match';
+      this.animateOverlay = true;
+      this.render();
+      return;
+    }
+    this.nextHand();
   }
 
   private nextHand(): void {
@@ -167,31 +258,25 @@ export class App {
   private say(seat: number, text: string, big = false): void {
     const bubble = { text, big };
     this.bubbles[seat] = bubble;
-    const gen = this.generation;
-    window.setTimeout(() => {
-      if (gen === this.generation && this.bubbles[seat] === bubble) {
+    this.schedule(1900, () => {
+      if (this.bubbles[seat] === bubble) {
         this.bubbles[seat] = null;
         this.render();
       }
-    }, 1800);
+    });
   }
 
   // ---------- input ----------
 
   private humanMovesFor(tile: Tile): Move[] {
     const h = this.match?.hand;
-    if (!h || h.current !== HUMAN || h.result || this.overlay) return [];
+    if (!h || h.current !== HUMAN || h.result || this.overlay || this.roulette) return [];
     return legalMoves(h).filter((m) => sameTile(m.tile, tile));
   }
 
   private tryTile(tile: Tile): void {
     const moves = this.humanMovesFor(tile);
-    if (moves.length === 0) {
-      this.shake = tile;
-      this.render();
-      this.shake = null;
-      return;
-    }
+    if (moves.length === 0) return;
     const h = this.match!.hand;
     if (moves.length === 1) return this.play(moves[0]);
     if (h.leftEnd === h.rightEnd) {
@@ -205,25 +290,27 @@ export class App {
   }
 
   private chooseSide(side: Side): void {
-    if (this.selected) this.play({ tile: this.selected, side });
+    if (this.selected && this.humanMovesFor(this.selected).some((m) => m.side === side)) {
+      this.play({ tile: this.selected, side });
+    }
   }
 
   private onClick(e: Event): void {
-    const el = (e.target as Element).closest<HTMLElement | SVGElement>('[data-action]');
+    const el = (e.target as Element).closest<HTMLElement>('[data-action]');
     if (!el) return;
     const { action, value } = el.dataset;
     switch (action) {
-      case 'play': this.startMatch(); break;
+      case 'play': this.startMatch(value as Mode); break;
       case 'continue': this.enterGame(); break;
       case 'options': this.screen = 'options'; this.render(); break;
       case 'howto': this.screen = 'howto'; this.render(); break;
-      case 'menu': this.generation++; this.screen = 'menu'; this.render(); break;
+      case 'menu': this.toMenu(); break;
       case 'quit': platform.quit(); break;
       case 'fullscreen': platform.toggleFullscreen(); break;
-      case 'tile': this.tryTile(value!.split('-').map(Number) as unknown as Tile); break;
       case 'side': this.chooseSide(value as Side); break;
-      case 'next-hand': this.nextHand(); break;
-      case 'new-match': this.startMatch(); break;
+      case 'next-hand': this.continueAfterHand(); break;
+      case 'trigger': this.roulette?.waitHuman?.(); break;
+      case 'new-match': this.startMatch(this.match?.rules.mode ?? 'ruleta'); break;
       case 'set': this.updateSetting(el.dataset.key as keyof Settings, value!); break;
     }
   }
@@ -234,9 +321,10 @@ export class App {
       if (e.key === 'Escape' && this.screen !== 'menu') { this.screen = 'menu'; this.render(); }
       return;
     }
-    if (e.key === 'Escape') { this.generation++; this.screen = 'menu'; this.render(); return; }
+    if (e.key === 'Escape') { this.toMenu(); return; }
+    if (this.roulette?.waitHuman && (e.key === 'Enter' || e.key === ' ')) { this.roulette.waitHuman(); return; }
     if (this.overlay && (e.key === 'Enter' || e.key === ' ')) {
-      if (this.overlay === 'hand') this.nextHand(); else this.startMatch();
+      if (this.overlay === 'hand') this.continueAfterHand(); else this.startMatch(this.match!.rules.mode);
       return;
     }
     const n = Number(e.key);
@@ -257,14 +345,50 @@ export class App {
     this.render();
   }
 
+  /** Read-only snapshot for automated tests. */
+  private debugState() {
+    const h = this.match?.hand;
+    return {
+      screen: this.screen, overlay: this.overlay, mode: this.match?.rules.mode,
+      current: h?.current, finished: !!h?.result, roulette: !!this.roulette,
+      awaitingTrigger: !!this.roulette?.waitHuman, alive: this.match?.alive,
+      hand: h?.hands[HUMAN].map((x) => x.join('-')) ?? [],
+      playable: h && h.current === HUMAN && !h.result && !this.overlay && !this.roulette
+        ? legalMoves(h).map((m) => `${m.tile.join('-')}:${m.side}`) : [],
+      selected: this.selected?.join('-') ?? null,
+    };
+  }
+
   // ---------- rendering ----------
 
   private render(): void {
     document.documentElement.lang = this.settings.lang;
     const view = { menu: () => this.menuView(), options: () => this.optionsView(), howto: () => this.howToView(), game: () => this.gameView() };
-    this.root.innerHTML = view[this.screen]();
-    this.freshIndex = -1;
+    this.ui.innerHTML = view[this.screen]();
+    this.ui.className = `ui ui-${this.screen}`;
     this.animateOverlay = false;
+    if (this.screen === 'game' && this.match) {
+      const h = this.match.hand;
+      const myTurn = h.current === HUMAN && !h.result && !this.overlay && !this.roulette;
+      this.scene.sync({
+        hand: h,
+        alive: this.ruleta ? this.match.alive : [true, true, true, true],
+        ruleta: this.ruleta,
+        reveal: h.result !== null,
+        playable: myTurn ? legalMoves(h).map((m) => m.tile) : [],
+        selected: this.selected,
+        targets: this.selected ? this.humanMovesFor(this.selected).map((m) => m.side) : [],
+      });
+      this.positionTags();
+    }
+  }
+
+  private positionTags(): void {
+    if (this.screen !== 'game') return;
+    this.ui.querySelectorAll<HTMLElement>('.tag[data-seat]').forEach((el) => {
+      const pos = this.scene.headScreenPos(Number(el.dataset.seat));
+      if (pos) el.style.transform = `translate(${pos.x}px, ${pos.y}px) translate(-50%, -50%)`;
+    });
   }
 
   private flag(): string {
@@ -275,20 +399,23 @@ export class App {
 
   private menuView(): string {
     const s = t();
-    const canContinue = this.match && this.match.winnerTeam === null;
+    const canContinue = this.match && !this.isOver(this.match);
     return `<main class="screen menu">
       ${this.flag()}
       <h1 class="logo">${s.title}</h1>
       <p class="tagline">${s.tagline}</p>
       <nav class="menu-buttons">
-        ${canContinue ? `<button class="btn primary" data-action="continue">${s.continue}</button>` : ''}
-        <button class="btn ${canContinue ? '' : 'primary'}" data-action="play">${canContinue ? s.newMatch : s.play}</button>
-        <button class="btn" data-action="howto">${s.howTo}</button>
-        <button class="btn" data-action="options">${s.options}</button>
-        ${platform.isDesktop ? `<button class="btn ghost" data-action="quit">${s.quit}</button>` : ''}
+        ${canContinue ? `<button class="btn" data-action="continue">${s.continue}</button>` : ''}
+        <button class="btn primary mode" data-action="play" data-value="ruleta">
+          <span class="mode-title">${s.ruleta}</span><span class="mode-desc">${s.ruletaDesc}</span></button>
+        <button class="btn mode" data-action="play" data-value="parejas">
+          <span class="mode-title">${s.parejas}</span><span class="mode-desc">${s.parejasDesc}</span></button>
+        <div class="row">
+          <button class="btn small" data-action="howto">${s.howTo}</button>
+          <button class="btn small" data-action="options">${s.options}</button>
+          ${platform.isDesktop ? `<button class="btn small ghost" data-action="quit">${s.quit}</button>` : ''}
+        </div>
       </nav>
-      <div class="menu-tiles">${[[6, 6], [3, 5], [1, 4]].map(([a, b], i) =>
-        `<svg viewBox="0 0 1 2" class="deco deco-${i}">${tileMarkup(0, 0, 1, 2, a, b)}</svg>`).join('')}</div>
     </main>`;
   }
 
@@ -321,9 +448,16 @@ export class App {
     return `<main class="screen panel">
       <h2>${s.howTo}</h2>
       <ol class="rules">${s.rulesText.map((r) => `<li>${r}</li>`).join('')}</ol>
-      <p class="note">1–7: ${s.play.toLowerCase()} · ← →: ${s.chooseSide.toLowerCase()} · Esc: ${s.menu.toLowerCase()} · F11: ${s.fullscreen.toLowerCase()}</p>
+      <p class="rules"><b>${s.ruleta}:</b> ${s.ruletaDesc} (${CHAMBERS} ${s.chambers.toLowerCase()}, 1 🔫)</p>
+      <p class="note">1–7 · ← → · Enter · Esc · F11</p>
       <button class="btn" data-action="menu">${s.back}</button>
     </main>`;
+  }
+
+  private chambers(p: number): string {
+    const r = this.match!.revolvers[p];
+    const dots = Array.from({ length: CHAMBERS }, (_, i) => `<i class="${i < r.pulls ? 'used' : ''}"></i>`).join('');
+    return `<span class="chambers" title="${t().chambers}">${dots}</span>`;
   }
 
   private gameView(): string {
@@ -331,100 +465,93 @@ export class App {
     const s = t();
     const h = m.hand;
     const reveal = h.result !== null;
-    const seat = (p: number) => {
-      const active = !h.result && h.current === p;
-      const tiles = p === HUMAN ? this.humanHand() : this.opponentHand(p, reveal);
+    const tags = [1, 2, 3].map((p) => {
+      const out = this.ruleta && !m.alive[p];
+      const active = !h.result && h.current === p && !out;
       const bubble = this.bubbles[p];
-      return `<section class="seat seat-${SEATS[p]} ${active ? 'active' : ''} team-${teamOf(p)}">
-        <div class="nameplate"><span class="avatar">${s.names[p][0]}</span><span class="name">${s.names[p]}</span>
-          ${active && p !== HUMAN ? `<span class="dots"><i></i><i></i><i></i></span>` : ''}
-          ${active && p === HUMAN ? `<span class="your-turn">${s.yourTurn}</span>` : ''}
-          ${reveal ? `<span class="count">${handPips(h.hands[p])}</span>` : ''}</div>
-        ${tiles}
+      return `<div class="tag ${active ? 'active' : ''} ${out ? 'out' : ''} ${this.ruleta ? 'solo' : `team-${teamOf(p)}`}" data-seat="${p}">
         ${bubble ? `<div class="bubble ${bubble.big ? 'big' : ''}">${bubble.text}</div>` : ''}
-      </section>`;
-    };
+        <div class="nameplate"><span class="name">${out ? '✝ ' : ''}${s.names[p]}</span>
+          ${active ? '<span class="dots"><i></i><i></i><i></i></span>' : ''}
+          ${reveal && !out ? `<span class="count">${handPips(h.hands[p])}</span>` : ''}
+          ${this.ruleta && !out ? this.chambers(p) : ''}</div>
+      </div>`;
+    }).join('');
+
+    const myTurn = h.current === HUMAN && !h.result && !this.overlay && !this.roulette;
+    const myBubble = this.bubbles[HUMAN];
+    const score = this.ruleta
+      ? `<div class="score"><span class="vs">${s.ruleta} · ${s.hand} ${m.handNumber}</span></div>`
+      : `<div class="score"><span class="team team-0">${s.us} <b>${m.scores[0]}</b></span>
+          <span class="vs">${s.hand} ${m.handNumber} · ${s.to} ${m.rules.targetScore}</span>
+          <span class="team team-1">${s.them} <b>${m.scores[1]}</b></span></div>`;
+    const sideButtons = this.selected
+      ? `<div class="sides"><span>${s.chooseSide}</span>${this.humanMovesFor(this.selected).map((mv) =>
+        `<button class="btn small" data-action="side" data-value="${mv.side}">${mv.side === 'left' ? '◀ ' + s.leftEnd : s.rightEnd + ' ▶'}</button>`).join('')}</div>`
+      : '';
+    const gun = m.revolvers[HUMAN];
+    const trigger = this.roulette?.waitHuman
+      ? `<div class="trigger-panel"><p class="odds">${s.odds}: <b>1 / ${CHAMBERS - gun.pulls}</b> (${Math.round(fireChance(gun) * 100)}%)</p>
+         <button class="btn primary trigger" data-action="trigger">${s.pullTrigger}</button></div>`
+      : '';
     return `<main class="screen game">
       <header class="hud">
-        <button class="btn small ghost" data-action="menu" aria-label="${s.menu}">☰ ${s.menu}</button>
-        <div class="score"><span class="team team-0">${s.us} <b>${m.scores[0]}</b></span>
-          <span class="vs">${s.hand} ${m.handNumber} · ${s.to} ${m.rules.targetScore}</span>
-          <span class="team team-1">${s.them} <b>${m.scores[1]}</b></span></div>
+        <button class="btn small ghost" data-action="menu">☰ ${s.menu}</button>
+        ${score}
         <div class="flag-mini">${this.flag()}</div>
       </header>
-      <div class="board">${this.boardSvg()}</div>
-      ${[0, 1, 2, 3].map(seat).join('')}
+      ${tags}
+      <footer class="me ${myTurn ? 'active' : ''}">
+        ${myBubble ? `<div class="bubble ${myBubble.big ? 'big' : ''}">${myBubble.text}</div>` : ''}
+        ${myTurn && !this.selected ? `<p class="hint">${s.clickTiles}</p>` : ''}
+        ${sideButtons}
+        <div class="nameplate"><span class="name">${s.names[HUMAN]}</span>
+          ${myTurn ? `<span class="your-turn">${s.yourTurn}</span>` : ''}
+          ${reveal ? `<span class="count">${handPips(h.hands[HUMAN])}</span>` : ''}
+          ${this.ruleta ? this.chambers(HUMAN) : ''}</div>
+      </footer>
+      ${this.status ? `<div class="status">${this.status}</div>` : ''}
+      ${trigger}
       ${this.overlayView()}
     </main>`;
-  }
-
-  private boardSvg(): string {
-    const h = this.match!.hand;
-    const layout = layoutBoard(h.placements);
-    const pad = 1.2;
-    const b = layout.bounds;
-    const vb = `${b.minX - pad} ${b.minY - pad} ${b.maxX - b.minX + pad * 2} ${b.maxY - b.minY + pad * 2}`;
-    const tiles = layout.tiles.map((lt) => tileMarkup(lt.x, lt.y, lt.w, lt.h, lt.first, lt.second, lt.index === this.freshIndex ? 'fresh' : '')).join('');
-    let targets = '';
-    if (this.selected && layout.ends) {
-      const moves = this.humanMovesFor(this.selected);
-      targets = moves.map((mv) => {
-        const p = layout.ends![mv.side];
-        return `<g class="target" data-action="side" data-value="${mv.side}"><circle cx="${p.x}" cy="${p.y}" r="0.75"/>
-          <text x="${p.x}" y="${p.y + 0.22}">${mv.side === 'left' ? '◀' : '▶'}</text></g>`;
-      }).join('');
-    }
-    return `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="board">${tiles}${targets}</svg>`;
-  }
-
-  private humanHand(): string {
-    const h = this.match!.hand;
-    const myTurn = h.current === HUMAN && !h.result && !this.overlay;
-    const playable = myTurn ? legalMoves(h) : [];
-    return `<div class="hand mine">${h.hands[HUMAN].map((tile, i) => {
-      const can = playable.some((mv) => sameTile(mv.tile, tile));
-      const cls = [
-        'hand-tile', can ? 'playable' : myTurn ? 'dim' : '',
-        this.selected && sameTile(this.selected, tile) ? 'selected' : '',
-        this.shake && sameTile(this.shake, tile) ? 'shake' : '',
-      ].join(' ');
-      return `<button class="${cls}" data-action="tile" data-value="${tile[0]}-${tile[1]}" aria-label="${tile[0]} ${tile[1]}">
-        <svg viewBox="0 0 1 2">${tileMarkup(0, 0, 1, 2, tile[0], tile[1])}</svg><kbd>${i + 1}</kbd></button>`;
-    }).join('')}</div>`;
-  }
-
-  private opponentHand(p: number, reveal: boolean): string {
-    const tiles = this.match!.hand.hands[p];
-    const vertical = p === 1 || p === 3;
-    return `<div class="hand others ${vertical ? 'vertical' : ''}">${tiles.map((tile) => {
-      const [w, hgt] = vertical ? [2, 1] : [1, 2];
-      const inner = reveal ? tileMarkup(0, 0, w, hgt, tile[0], tile[1]) : tileBackMarkup(0, 0, w, hgt);
-      return `<svg class="mini" viewBox="0 0 ${w} ${hgt}">${inner}</svg>`;
-    }).join('')}</div>`;
   }
 
   private overlayView(): string {
     if (!this.overlay) return '';
     const m = this.match!;
     const s = t();
-    const r = m.history[m.history.length - 1];
-    if (this.overlay === 'match') {
-      const won = m.winnerTeam === teamOf(HUMAN);
-      return `<div class="overlay ${this.animateOverlay ? 'enter' : ''}"><div class="card ${won ? 'win' : 'lose'}">
-        ${this.flag()}
-        <h2>${won ? s.weWin : s.theyWin}</h2>
-        ${m.pollona ? `<p class="pollona">${s.pollona}</p>` : ''}
-        <p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>
+    const enter = this.animateOverlay ? 'enter' : '';
+    if (this.overlay === 'dead') {
+      return `<div class="overlay dead ${enter}"><div class="card lose">
+        <h2 class="you-died">${s.youDied}</h2>
         <div class="row"><button class="btn primary" data-action="new-match">${s.newMatch}</button>
         <button class="btn" data-action="menu">${s.menu}</button></div></div></div>`;
     }
+    if (this.overlay === 'match') {
+      const won = this.ruleta ? m.winnerPlayer === HUMAN : m.winnerTeam === teamOf(HUMAN);
+      const headline = this.ruleta ? (won ? s.youWinRuleta : `${s.names[m.winnerPlayer!]} ${s.winsRuleta}`) : won ? s.weWin : s.theyWin;
+      return `<div class="overlay ${enter}"><div class="card ${won ? 'win' : 'lose'}">
+        ${this.flag()}
+        <h2>${headline}</h2>
+        ${!this.ruleta && m.pollona ? `<p class="pollona">${s.pollona}</p>` : ''}
+        ${this.ruleta ? `<p>${s.lastStanding}</p>` : `<p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>`}
+        <div class="row"><button class="btn primary" data-action="new-match">${s.newMatch}</button>
+        <button class="btn" data-action="menu">${s.menu}</button></div></div></div>`;
+    }
+    const r = m.history[m.history.length - 1];
     const headline = r.reason === 'domino' ? (r.capicu ? s.capicu : s.domino) : s.tranque;
     const who = r.winnerPlayer === null ? s.tiedTranque : `${s.names[r.winnerPlayer]} ${s.wonHand}`;
-    return `<div class="overlay ${this.animateOverlay ? 'enter' : ''}"><div class="card ${r.winnerTeam === teamOf(HUMAN) ? 'win' : r.winnerTeam === null ? '' : 'lose'}">
+    const shooters = m.pendingShooters;
+    const humanWon = this.ruleta ? r.winnerPlayer === HUMAN : r.winnerTeam === teamOf(HUMAN);
+    const counts = r.pipCounts.map((c, p) => (m.hand.seated[p]
+      ? `<li class="${this.ruleta ? (shooters.includes(p) ? 'shooter' : '') : `team-${teamOf(p)}`}">${s.names[p]}<b>${c}</b></li>` : '')).join('');
+    return `<div class="overlay ${enter}"><div class="card ${humanWon ? 'win' : r.winnerPlayer === null ? '' : 'lose'}">
       <h2>${headline}</h2><p>${who}</p>
-      ${r.winnerTeam !== null ? `<p class="points team-${r.winnerTeam}">+${r.points} ${s.points}</p>` : ''}
-      <h3>${s.pipsLeft}</h3><ul class="counts">${r.pipCounts.map((c, p) => `<li class="team-${teamOf(p)}">${s.names[p]}<b>${c}</b></li>`).join('')}</ul>
-      <p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>
-      <button class="btn primary" data-action="next-hand">${s.nextHand}</button></div></div>`;
+      ${!this.ruleta && r.winnerTeam !== null ? `<p class="points team-${r.winnerTeam}">+${r.points} ${s.points}</p>` : ''}
+      <h3>${s.pipsLeft}</h3><ul class="counts">${counts}</ul>
+      ${this.ruleta
+        ? `<p class="must-shoot">${shooters.length ? `${s.mustShoot} <b>${shooters.map((p) => s.names[p]).join(', ')}</b>` : s.nobodyShoots}</p>`
+        : `<p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>`}
+      <button class="btn primary" data-action="next-hand">${this.ruleta && shooters.length ? s.continueBtn : s.nextHand}</button></div></div>`;
   }
 }

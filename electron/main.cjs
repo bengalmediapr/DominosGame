@@ -20,6 +20,9 @@ function readAppId() {
   return null;
 }
 
+// Many older or laptop GPUs are on Chromium's blocklist; the 3D table still runs fine on them.
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+
 let steam = null;
 function initSteam() {
   const appId = readAppId();

@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { chooseMove } from './ai';
 import {
-  DEFAULT_RULES, HandState, MatchState, applyMove, dealHand, isBlocked, legalMoves, newMatch,
-  pass, resolveTranque, scoreFinishedHand, startNextHand,
+  DEFAULT_RULES, HandState, MatchState, Rules, applyMove, dealHand, fireChance, isBlocked, isMatchOver,
+  legalMoves, newMatch, pass, pullTrigger, resolveTranque, scoreFinishedHand, startNextHand,
 } from './game';
 import { createDeck, mulberry32 } from './tiles';
 
 const hand = (overrides: Partial<HandState>): HandState => ({
   hands: [[], [], [], []], placements: [], leftEnd: null, rightEnd: null,
-  current: 0, starter: 0, mustOpenWith: null, passes: [], result: null, ...overrides,
+  current: 0, starter: 0, seated: [true, true, true, true], mustOpenWith: null, passes: [], result: null, ...overrides,
 });
 
 describe('deck and deal', () => {
@@ -98,14 +98,15 @@ describe('scoring', () => {
   });
 });
 
-function playMatch(seed: number): MatchState {
+function playMatch(seed: number, rules: Rules = DEFAULT_RULES): MatchState {
   const rng = mulberry32(seed);
-  let m = newMatch(rng);
-  for (let guard = 0; guard < 10_000 && m.winnerTeam === null; guard++) {
+  let m = newMatch(rng, rules);
+  for (let guard = 0; guard < 10_000 && !isMatchOver(m); guard++) {
     const h = m.hand;
     if (h.result) {
       m = scoreFinishedHand(m);
-      if (m.winnerTeam === null) m = startNextHand(m, rng);
+      for (const loser of h.result.losers) if (!isMatchOver(m)) m = pullTrigger(m, loser).match;
+      if (!isMatchOver(m)) m = startNextHand(m, rng);
       continue;
     }
     const diff = h.current % 2 === 0 ? 'hard' : 'normal';
@@ -129,5 +130,56 @@ describe('full matches', () => {
     const n = 120;
     for (let seed = 1000; seed < 1000 + n; seed++) if (playMatch(seed).winnerTeam === 0) hardWins++;
     expect(hardWins / n).toBeGreaterThan(0.5);
+  });
+});
+
+const RULETA: Rules = { ...DEFAULT_RULES, mode: 'ruleta' };
+
+describe('ruleta (Liar\'s Bar style)', () => {
+  it('the revolver fires exactly on its bullet chamber, with rising odds', () => {
+    let m = newMatch(mulberry32(5), RULETA);
+    const bullet = m.revolvers[2].bullet;
+    const chances: number[] = [];
+    for (let i = 0; i <= bullet; i++) {
+      chances.push(fireChance(m.revolvers[2]));
+      const r = pullTrigger(m, 2);
+      expect(r.fired).toBe(i === bullet);
+      m = r.match;
+    }
+    expect(m.alive[2]).toBe(false);
+    expect(chances).toEqual([...chances].sort((a, b) => a - b));
+  });
+
+  it('the player left with the most pips faces the revolver', () => {
+    const s = hand({
+      hands: [[[2, 3]], [[6, 6]], [[1, 0]], [[3, 4]]], leftEnd: 3, rightEnd: 3,
+      placements: [{ tile: [3, 3], player: 3, side: 'start', inner: 3, outer: 3 }],
+    });
+    const r = applyMove(s, { tile: [2, 3], side: 'left' }, RULETA).result!;
+    expect(r).toMatchObject({ winnerPlayer: 0, winnerTeam: null, losers: [1] });
+  });
+
+  it('dead players are not dealt in and are skipped in turn order', () => {
+    let m = newMatch(mulberry32(9), RULETA);
+    m = { ...m, alive: [true, false, true, true], history: [{ ...resolveTranque(m.hand.hands, RULETA), winnerPlayer: 0 }] };
+    const next = startNextHand(m, mulberry32(10));
+    expect(next.hand.hands[1]).toEqual([]);
+    expect(next.hand.current).toBe(0);
+    let h = next.hand;
+    const seen = new Set<number>();
+    while (!h.result) {
+      seen.add(h.current);
+      const mv = chooseMove(h, RULETA, 'normal', mulberry32(1));
+      h = mv ? applyMove(h, mv, RULETA) : pass(h);
+    }
+    expect(seen.has(1)).toBe(false);
+  });
+
+  it('full ruleta matches end with exactly one survivor', () => {
+    for (let seed = 1; seed <= 60; seed++) {
+      const m = playMatch(seed, RULETA);
+      expect(m.alive.filter(Boolean)).toHaveLength(1);
+      expect(m.alive[m.winnerPlayer!]).toBe(true);
+    }
   });
 });
