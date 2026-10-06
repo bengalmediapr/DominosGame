@@ -6,3 +6,5 @@ playwright-report/
 steam_appid.txt
 *.log
 .DS_Store
+tests/_*.spec.ts
+_pw.config.ts

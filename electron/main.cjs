@@ -1,7 +1,17 @@
 // Desktop shell for Dominó Boricua (Windows / macOS / Linux, incl. Steam Deck).
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, protocol } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const MIME = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
+  '.glb': 'model/gltf-binary', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.txt': 'text/plain',
+};
+
+// Serve the game from app://game/ instead of file:// so fetch() can load the 3D models.
+const DIST = path.join(__dirname, '..', 'dist');
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+]);
 
 /**
  * Steam: active only when steamworks.js is installed AND an App ID is available
@@ -19,6 +29,9 @@ function readAppId() {
   }
   return null;
 }
+
+// The product name ("Dominó") ends up in the User-Agent; HTTP headers must be ASCII.
+app.userAgentFallback = app.userAgentFallback.normalize('NFD').replace(/[^\x20-\x7e]/g, '');
 
 // Many older or laptop GPUs are on Chromium's blocklist; the 3D table still runs fine on them.
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -55,7 +68,7 @@ function createWindow() {
     },
   });
   win.once('ready-to-show', () => win.show());
-  win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  win.loadURL('app://game/index.html');
   // Steam Deck / Big Picture launch in fullscreen.
   if (process.env.SteamDeck === '1' || process.argv.includes('--fullscreen')) win.setFullScreen(true);
   return win;
@@ -76,6 +89,13 @@ ipcMain.on('achievement', (_e, id) => {
 });
 
 app.whenReady().then(() => {
+  protocol.handle('app', (request) => {
+    const { pathname } = new URL(request.url);
+    const file = path.normalize(path.join(DIST, decodeURIComponent(pathname)));
+    if (!file.startsWith(DIST) || !fs.existsSync(file)) return new Response('Not found', { status: 404 });
+    const type = MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
+    return new Response(fs.readFileSync(file), { headers: { 'content-type': type } });
+  });
   Menu.setApplicationMenu(null);
   initSteam();
   createWindow();

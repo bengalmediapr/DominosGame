@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "app": "npm run build && electron .",
     "dist": "npm run build && electron-builder",
-    "dist:steam": "npm run build && electron-builder --dir"
+    "dist:steam": "npm run build && electron-builder --dir",
+    "models": "node scripts/prepare-models.mjs"
   },
   "build": {
     "appId": "pr.bengalmedia.dominoboricua",
@@ -56,6 +57,9 @@
     }
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.5.1",
+    "@gltf-transform/extensions": "^4.5.1",
+    "@gltf-transform/functions": "^4.5.1",
     "@playwright/test": "^1.63.0",
     "@types/three": "^0.186.0",
     "electron": "^44.5.1",

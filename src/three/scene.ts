@@ -3,8 +3,16 @@ import type { HandState, Side } from '../engine/game';
 import { Tile, sameTile } from '../engine/tiles';
 import { layoutBoard } from '../ui/layout';
 import {
-  Character, Room, SEAT_DIST, TABLE_HALF, TILE_T, makeCharacter, makeRevolver, makeRoom, makeTable, makeTile,
+  FLOOR_Y, Room, SEAT_DIST, TABLE_HALF, TILE_T, makeRevolver, makeRoom, makeTable, makeTile,
 } from './models';
+import { Avatar, SEAT_LOOKS, loadAvatar, loadChair } from './characters';
+
+export type LookName = (typeof SEAT_LOOKS)[number];
+
+/** Seated avatar height (world units) and how far above the floor they sit, so heads clear the table. */
+const AVATAR_HEIGHT = 27;
+const AVATAR_LIFT = 16;
+
 
 export interface SceneView {
   hand: HandState;
@@ -39,7 +47,9 @@ export class TableScene {
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2(-10, -10);
   private readonly seats: THREE.Group[] = [];
-  private readonly characters: (Character | null)[] = [];
+  private readonly characters: (Avatar | null)[] = [null, null, null, null];
+  private readonly castNames: (LookName | null)[] = [null, null, null, null];
+  private readonly avatars = new Map<LookName, Promise<Avatar>>();
   private readonly revolvers: { group: THREE.Group; drum: THREE.Object3D; rest: THREE.Matrix4 }[] = [];
   private readonly hands: THREE.Group[] = [];
   private readonly board = new THREE.Group();
@@ -78,7 +88,11 @@ export class TableScene {
     this.scene.fog = new THREE.Fog('#120a18', 90, 190);
     this.scene.add(this.camera);
 
-    this.scene.add(new THREE.HemisphereLight('#9a7bd6', '#2a1408', 0.9));
+    this.scene.add(new THREE.HemisphereLight('#9a7bd6', '#2a1408', 1.2));
+    // Warm bounce off the table onto the players' faces.
+    const faces = new THREE.PointLight('#ffcf9a', 1.1, 0, 0);
+    faces.position.set(0, 14, 0);
+    this.scene.add(faces);
     this.lamp = new THREE.SpotLight('#ffe2b0', 5, 0, 0.75, 0.55, 0);
     this.lamp.position.set(0, 32, 0);
     this.lamp.target.position.set(0, 0, 0);
@@ -105,12 +119,6 @@ export class TableScene {
       seat.rotation.y = (p * Math.PI) / 2;
       this.scene.add(seat);
       this.seats.push(seat);
-      const character = p === HUMAN ? null : makeCharacter(p - 1);
-      if (character) {
-        character.group.position.z = SEAT_DIST;
-        seat.add(character.group);
-      }
-      this.characters.push(character);
       const hand = new THREE.Group();
       seat.add(hand);
       this.hands.push(hand);
@@ -129,6 +137,7 @@ export class TableScene {
       const hit = this.pick();
       if (hit) this.onPick?.(hit.userData.pick as Pick);
     });
+    this.setCast([null, 'papo', 'lola', 'cheo']);
     new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
     this.renderer.setAnimationLoop(() => this.frame());
@@ -144,16 +153,51 @@ export class TableScene {
     }
   }
 
+  /** Who sits in each seat as seen from here (seat 0 is always you, so it's empty). */
+  setCast(cast: readonly (LookName | null)[]): void {
+    cast.forEach((look, p) => {
+      if (this.castNames[p] === look) return;
+      this.castNames[p] = look;
+      const old = this.characters[p];
+      if (old) this.seats[p].remove(old.root);
+      this.characters[p] = null;
+      if (!look) return;
+      this.avatarFor(look).then((a) => {
+        if (this.castNames[p] !== look) return;
+        this.characters.forEach((c, q) => {
+          if (c === a && q !== p) {
+            this.seats[q].remove(a.root);
+            this.characters[q] = null;
+          }
+        });
+        a.root.position.set(0, FLOOR_Y + AVATAR_LIFT, SEAT_DIST);
+        this.seats[p].add(a.root);
+        this.characters[p] = a;
+        a.dead = this.dead[p] ? 1 : 0;
+        a.aim = 0;
+        a.setGreyed(this.dead[p]);
+      }).catch((err) => console.error('Could not load character', look, err));
+    });
+  }
+
+  private avatarFor(look: LookName): Promise<Avatar> {
+    if (!this.avatars.has(look)) {
+      this.avatars.set(look, Promise.all([loadAvatar(look, AVATAR_HEIGHT), loadChair(2.5, (AVATAR_LIFT / AVATAR_HEIGHT) * 2.5)]).then(([a, chair]) => {
+        a.root.add(chair);
+        return a;
+      }));
+    }
+    return this.avatars.get(look)!;
+  }
+
   /** Bring everyone back to life and clear the table for a new match. */
   resetMatch(): void {
     for (let p = 0; p < 4; p++) {
       this.dead[p] = false;
       const c = this.characters[p];
       if (c) {
-        c.torso.rotation.set(0, 0, 0);
-        c.head.rotation.set(0, 0, 0);
-        c.gunArm.rotation.set(1.1, 0, 0);
-        for (const m of c.tint) m.color.copy((m.userData.base as THREE.Color | undefined) ?? m.color);
+        c.dead = c.aim = c.flinch = 0;
+        c.setGreyed(false);
       }
       const gun = this.revolvers[p];
       this.seats[p].attach(gun.group);
@@ -180,7 +224,7 @@ export class TableScene {
     const c = this.characters[seat];
     if (!c) return null;
     const v = c.tagAnchor.clone();
-    c.group.localToWorld(v);
+    c.root.localToWorld(v);
     v.project(this.camera);
     if (v.z > 1) return null;
     const rect = this.canvas.getBoundingClientRect();
@@ -195,42 +239,54 @@ export class TableScene {
       await this.humanRoulette(gun.group, gun.drum, fired, onBang);
       return;
     }
-    const c = this.characters[seat]!;
-    c.torso.attach(gun.group);
-    const from = { p: gun.group.position.clone(), q: gun.group.quaternion.clone() };
-    // The muzzle is ~6 units ahead of the frame: this puts it against the right temple.
-    const toP = new THREE.Vector3(10, 13.6, -0.4);
-    const toQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI, 0.08));
-    const armFrom = c.gunArm.rotation.clone();
+    const c = this.characters[seat];
+    if (!c) {
+      // Character model not loaded (yet): still play the sound and the outcome.
+      await this.wait(1500);
+      if (fired) {
+        onBang?.();
+        this.applyDeath(seat, false);
+      }
+      return;
+    }
     c.head.getWorldPosition(this.focusPoint);
-    this.focusPoint.y -= 2;
+    this.focusPoint.y -= 4;
     void this.tween(700, (t) => { this.focus = t; this.zoom = 0.6 * t; });
+    c.handSlot.attach(gun.group);
+    const from = { p: gun.group.position.clone(), q: gun.group.quaternion.clone() };
+    const GUN_IN_HAND = { p: new THREE.Vector3(), q: c.aimAtHead() };
     await this.tween(900, (t) => {
-      gun.group.position.lerpVectors(from.p, toP, t);
-      gun.group.quaternion.slerpQuaternions(from.q, toQ, t);
-      c.gunArm.rotation.set(armFrom.x * (1 - t) + 0.25 * t, 0, armFrom.z * (1 - t) + 2.55 * t);
-      c.head.rotation.z = -0.15 * t;
+      gun.group.position.lerpVectors(from.p, GUN_IN_HAND.p, t);
+      gun.group.quaternion.slerpQuaternions(from.q, GUN_IN_HAND.q, t);
+      c.aim = t;
     });
     await this.tween(500, (t) => { gun.drum.rotation.y = t * Math.PI * 4; });
-    await this.tween(1100, (t) => { gun.group.position.x = toP.x + Math.sin(t * 60) * 0.06; });
+    await this.tween(1100, (t) => { c.aim = 1 - Math.abs(Math.sin(t * 50)) * 0.015; });
     if (fired) {
       onBang?.();
       this.muzzleFlash(gun.group);
-      this.applyDeath(seat, true);
       this.seats[seat].attach(gun.group);
+      this.applyDeath(seat, true);
       const dropFrom = gun.group.position.clone();
-      const dropTo = new THREE.Vector3(9, 0.5, TABLE_HALF + 2);
-      await this.tween(500, (t) => gun.group.position.lerpVectors(dropFrom, dropTo, t));
+      const dropTo = new THREE.Vector3(9, 0.5, TABLE_HALF - 4);
+      const qFrom = gun.group.quaternion.clone();
+      const restQ = new THREE.Quaternion();
+      this.revolvers[seat].rest.decompose(new THREE.Vector3(), restQ, new THREE.Vector3());
+      await this.tween(500, (t) => {
+        gun.group.position.lerpVectors(dropFrom, dropTo, t);
+        gun.group.quaternion.slerpQuaternions(qFrom, restQ, t);
+        c.aim = 1 - t;
+      });
       await this.wait(700);
       await this.tween(600, (t) => { this.focus = 1 - t; this.zoom = 0.6 * (1 - t); });
     } else {
-      await this.tween(160, (t) => { c.head.rotation.x = -0.25 * Math.sin(t * Math.PI); });
-      await this.wait(500);
+      await this.tween(300, (t) => { c.flinch = t; });
+      c.flinch = 0;
+      await this.wait(400);
       await this.tween(700, (t) => {
-        gun.group.position.lerpVectors(toP, from.p, t);
-        gun.group.quaternion.slerpQuaternions(toQ, from.q, t);
-        c.gunArm.rotation.set(0.25 * (1 - t) + armFrom.x * t, 0, 2.55 * (1 - t) + armFrom.z * t);
-        c.head.rotation.z = -0.15 * (1 - t);
+        gun.group.position.lerpVectors(GUN_IN_HAND.p, from.p, t);
+        gun.group.quaternion.slerpQuaternions(GUN_IN_HAND.q, from.q, t);
+        c.aim = 1 - t;
         this.focus = 1 - t;
         this.zoom = 0.6 * (1 - t);
       });
@@ -301,17 +357,9 @@ export class TableScene {
     this.dead[seat] = true;
     const c = this.characters[seat];
     if (!c) return;
-    for (const m of c.tint) {
-      m.userData.base ??= m.color.clone();
-      m.color.lerp(new THREE.Color('#4a4a52'), 0.75);
-    }
-    const pose = (t: number) => {
-      c.torso.rotation.set(0.45 * t, 0, 0.55 * t);
-      c.head.rotation.set(0.5 * t, 0, 0.6 * t);
-      c.gunArm.rotation.set(1.1 * (1 - t) - 0.2 * t, 0, 0.4 * t);
-    };
-    if (animate) void this.tween(450, pose, easeOutBack);
-    else pose(1);
+    c.setGreyed(true);
+    if (animate) void this.tween(450, (t) => { c.dead = t; }, easeOutBack);
+    else c.dead = 1;
   }
 
   private syncBoard(hand: HandState, view: SceneView): void {
@@ -444,7 +492,7 @@ export class TableScene {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     // Keep the whole table in view on narrow windows.
-    this.baseFov = w / h < 1.5 ? 58 : 52;
+    this.baseFov = w / h < 1.5 ? 64 : 58;
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
   }
@@ -473,7 +521,7 @@ export class TableScene {
     } else {
       this.camera.position.copy(GAME_CAMERA.pos);
       if (this.focus > 0) {
-        this.camera.position.lerp(this.focusPoint, this.focus * 0.25);
+        this.camera.position.lerp(this.focusPoint, this.focus * 0.1);
         this.camera.lookAt(GAME_CAMERA.look.clone().lerp(this.focusPoint, this.focus));
       } else {
         this.camera.lookAt(GAME_CAMERA.look);
@@ -495,11 +543,7 @@ export class TableScene {
     this.room.fan.rotation.y += dt * 2.2;
     (this.room.neon.material as THREE.MeshBasicMaterial).opacity = Math.random() < 0.015 ? 0.55 : 1;
     this.room.bulbs.forEach((b, i) => b.scale.setScalar(0.85 + 0.25 * Math.sin(t * 2 + i)));
-    this.characters.forEach((c, p) => {
-      if (!c || this.dead[p]) return;
-      c.torso.scale.y = 1 + Math.sin(t * 1.6 + p) * 0.012;
-      c.head.rotation.y = Math.sin(t * 0.5 + p * 2) * 0.12;
-    });
+    for (const c of this.characters) c?.update(dt);
     this.board.children.forEach((o) => {
       if (o.userData.pulse) o.scale.setScalar(1 + Math.sin(t * 6) * 0.12);
     });
