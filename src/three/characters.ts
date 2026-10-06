@@ -185,9 +185,21 @@ function recolorAtlas(material: THREE.MeshStandardMaterial, atlas: THREE.Texture
 }
 
 const loader = new GLTFLoader();
-const cache = new Map<string, Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }>>();
+type Gltf = { scene: THREE.Group; animations: THREE.AnimationClip[] };
+const cache = new Map<string, Promise<Gltf>>();
+
+/** Single-file builds (e.g. the web demo) can embed models as base64 instead of shipping .glb files. */
+function loadGlb(file: string): Promise<Gltf> {
+  const embedded = (globalThis as { __DOMINO_MODELS?: Record<string, string> }).__DOMINO_MODELS?.[file];
+  if (embedded) {
+    const bytes = Uint8Array.from(atob(embedded), (c) => c.charCodeAt(0));
+    return loader.parseAsync(bytes.buffer, './models/') as Promise<Gltf>;
+  }
+  return loader.loadAsync(`./models/${file}.glb`) as Promise<Gltf>;
+}
+
 const loadModel = (file: string) => {
-  if (!cache.has(file)) cache.set(file, loader.loadAsync(`./models/${file}.glb`) as never);
+  if (!cache.has(file)) cache.set(file, loadGlb(file));
   return cache.get(file)!;
 };
 
@@ -306,7 +318,7 @@ let chairModel: Promise<THREE.Group> | null = null;
  * down so a raised avatar's chair still reaches the floor.
  */
 export async function loadChair(worldHeight: number, legExtension = 0): Promise<THREE.Group> {
-  chairModel ??= Promise.all([loader.loadAsync('./models/chair.glb'), loadTexture('chair')]).then(([g, tex]) => {
+  chairModel ??= Promise.all([loadGlb('chair'), loadTexture('chair')]).then(([g, tex]) => {
     g.scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
