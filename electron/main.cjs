@@ -1,0 +1,82 @@
+// Desktop shell for Dominó Boricua (Windows / macOS / Linux, incl. Steam Deck).
+const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const path = require('node:path');
+const fs = require('node:fs');
+
+/**
+ * Steam: active only when steamworks.js is installed AND an App ID is available
+ * (STEAM_APP_ID env var, or a steam_appid.txt next to the executable / project root).
+ * Without Steam the game runs normally, so the same build works for itch.io, GOG, etc.
+ */
+function readAppId() {
+  if (process.env.STEAM_APP_ID) return Number(process.env.STEAM_APP_ID);
+  const candidates = [
+    path.join(path.dirname(app.getPath('exe')), 'steam_appid.txt'),
+    path.join(__dirname, '..', 'steam_appid.txt'),
+  ];
+  for (const file of candidates) {
+    try { return Number(fs.readFileSync(file, 'utf8').trim()); } catch { /* not found */ }
+  }
+  return null;
+}
+
+let steam = null;
+function initSteam() {
+  const appId = readAppId();
+  if (!appId) return;
+  try {
+    const steamworks = require('steamworks.js');
+    steam = steamworks.init(appId);
+    steamworks.electronEnableSteamOverlay();
+    console.log(`[steam] initialised for app ${appId} as ${steam.localplayer.getName()}`);
+  } catch (err) {
+    console.warn('[steam] not available:', err.message);
+    steam = null;
+  }
+}
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 960,
+    minHeight: 600,
+    backgroundColor: '#241018',
+    title: 'Dominó Boricua',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  win.once('ready-to-show', () => win.show());
+  win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  // Steam Deck / Big Picture launch in fullscreen.
+  if (process.env.SteamDeck === '1' || process.argv.includes('--fullscreen')) win.setFullScreen(true);
+  return win;
+}
+
+ipcMain.on('quit', () => app.quit());
+ipcMain.on('toggle-fullscreen', (e) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win) win.setFullScreen(!win.isFullScreen());
+});
+ipcMain.on('achievement', (_e, id) => {
+  if (!steam || typeof id !== 'string') return;
+  try {
+    if (!steam.achievement.isActivated(id)) steam.achievement.activate(id);
+  } catch (err) {
+    console.warn('[steam] achievement failed', id, err.message);
+  }
+});
+
+app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
+  initSteam();
+  createWindow();
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('window-all-closed', () => app.quit());

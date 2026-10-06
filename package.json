@@ -1,0 +1,73 @@
+{
+  "name": "domino-boricua",
+  "productName": "Dominó Boricua",
+  "version": "0.1.0",
+  "description": "Puerto Rican style dominoes (2 vs 2, double-six, to 500) for PC.",
+  "author": "Bengal Media PR",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "app": "npm run build && electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:steam": "npm run build && electron-builder --dir"
+  },
+  "build": {
+    "appId": "pr.bengalmedia.dominoboricua",
+    "productName": "Dominó Boricua",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "dir",
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dir",
+        "dmg"
+      ],
+      "category": "public.app-category.board-games"
+    },
+    "linux": {
+      "target": [
+        "dir",
+        "AppImage"
+      ],
+      "category": "Game"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3"
+  },
+  "optionalDependencies": {
+    "steamworks.js": "^0.4.0"
+  },
+  "dependencies": {
+    "@fontsource/lilita-one": "^5.3.0",
+    "@fontsource/nunito": "^5.3.0"
+  }
+}
