@@ -68,3 +68,47 @@ test('names are unique, and a name\'s code signs you in on another device', asyn
   await expect(phone.locator('.playing-as')).toContainText('Ana Boricua');
   await phoneCtx.close();
 });
+
+test('a public table shows up in the list, and one click sits you down', async ({ browser }) => {
+  const env: Env = { DB: fakeD1() };
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await serve(context, env);
+  const errors: string[] = [];
+  const open = async () => {
+    const page = await context.newPage();
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto('/');
+    await page.evaluate(() => {
+      localStorage.setItem('capicu.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 }));
+      localStorage.setItem('capicu.net', 'tabs'); // tab-to-tab: no internet broker here
+    });
+    await page.reload();
+    await page.locator('[data-action=online]').click();
+    return page;
+  };
+  const host = await open();
+  await expect(host.locator('.online-box').first()).toContainText('No hay mesas abiertas');
+  await host.locator('[data-action=host-public]').click();
+  await expect(host.locator('.visibility')).toContainText('Pública');
+
+  const guest = await open();
+  const row = guest.locator('.public-tables li');
+  await expect(row).toHaveCount(1, { timeout: 20_000 });
+  await expect(row).toContainText('1/4');
+  await row.locator('[data-action=join-public]').click();
+  await expect.poll(async () => guest.evaluate(() => (window as any).__domino.state().lobby?.me)).toBe(2);
+
+  // The list shows the new head count; making it private takes it off.
+  await expect.poll(async () => {
+    const res = await handle(new Request('https://capicu.test/api/tables'), env);
+    return ((await res.json()) as { tables: { humans: number }[] }).tables[0]?.humans;
+  }).toBe(2);
+  await host.locator('[data-action=toggle-public]').click();
+  await expect(host.locator('.visibility')).toContainText('Privada');
+  await expect.poll(async () => {
+    const res = await handle(new Request('https://capicu.test/api/tables'), env);
+    return ((await res.json()) as { tables: unknown[] }).tables.length;
+  }).toBe(0);
+  expect(errors).toEqual([]);
+  await context.close();
+});

@@ -9,6 +9,9 @@
  *   POST  /api/results      {matchId, points, won}  add a finished match to your totals (once per matchId)
  *   GET   /api/leaderboard                          top players by points
  *   GET   /api/ice                                  WebRTC relay (TURN) servers for online play
+ *   GET   /api/tables                               open public tables, newest first
+ *   POST  /api/tables       {code, host, mode, humans, secret}  list or refresh your public table
+ *   POST  /api/tables/close {code, secret}          take it off the list
  *
  * Each device gets its own token; the server keeps only hashes of tokens and codes. Five wrong codes in
  * a row lock the name for 15 minutes. Results are reported by each player's own game, so the server
@@ -62,6 +65,14 @@ const SCHEMA = [
     won INTEGER NOT NULL,
     at INTEGER NOT NULL,
     PRIMARY KEY (player_id, match_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS public_tables (
+    code TEXT PRIMARY KEY,
+    host TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    humans INTEGER NOT NULL,
+    secret_hash TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS tokens (
     token_hash TEXT PRIMARY KEY,
@@ -219,6 +230,10 @@ async function iceServers(env: Env): Promise<Response> {
   return json({ iceServers: servers });
 }
 
+/** A public table disappears from the list when its host stops refreshing it for this long. */
+export const TABLE_STALE_MS = 45_000;
+const TABLE_LIST_SIZE = 30;
+
 export async function handle(req: Request, env: Env): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   if (req.method === 'GET' && new URL(req.url).pathname.replace(/\/+$/, '') === '/api/ice') return iceServers(env);
@@ -310,6 +325,39 @@ export async function handle(req: Request, env: Env): Promise<Response> {
           .bind(points, won ? 1 : 0, me.id).run();
       }
       return json(await profile(db, (await playerById(db, me.id))!));
+    }
+
+    case 'GET /api/tables': {
+      const now = Date.now();
+      await db.prepare('DELETE FROM public_tables WHERE updated_at < ?').bind(now - 10 * TABLE_STALE_MS).run();
+      const { results } = await db.prepare(
+        'SELECT code, host, mode, humans FROM public_tables WHERE updated_at > ? AND humans < 4 ORDER BY updated_at DESC LIMIT ?',
+      ).bind(now - TABLE_STALE_MS, TABLE_LIST_SIZE).all<{ code: string; host: string; mode: string; humans: number }>();
+      return json({ tables: results });
+    }
+
+    case 'POST /api/tables': {
+      const { code, host, mode, humans, secret } = await body(req);
+      if (typeof code !== 'string' || !/^[A-Z0-9]{4,6}$/.test(code) || typeof secret !== 'string' || !/^[0-9a-f]{32,64}$/.test(secret)
+        || (mode !== 'ruleta' && mode !== 'parejas') || !Number.isInteger(humans) || (humans as number) < 1 || (humans as number) > 4) {
+        return fail(400, 'invalid');
+      }
+      const hostName = [...String(host ?? '').replace(/\s+/g, ' ').trim()].slice(0, 24).join('') || '?';
+      const hash = await sha256(secret);
+      // Only whoever listed a code can refresh it.
+      const listed = await db.prepare(
+        `INSERT INTO public_tables (code, host, mode, humans, secret_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (code) DO UPDATE SET host = excluded.host, mode = excluded.mode, humans = excluded.humans,
+           updated_at = excluded.updated_at WHERE public_tables.secret_hash = excluded.secret_hash`,
+      ).bind(code, hostName, mode, humans, hash, Date.now()).run();
+      return listed.meta.changes > 0 ? json({ ok: true }) : fail(409, 'taken');
+    }
+
+    case 'POST /api/tables/close': {
+      const { code, secret } = await body(req);
+      if (typeof code !== 'string' || typeof secret !== 'string') return fail(400, 'invalid');
+      await db.prepare('DELETE FROM public_tables WHERE code = ? AND secret_hash = ?').bind(code, await sha256(secret)).run();
+      return json({ ok: true });
     }
 
     case 'GET /api/leaderboard': {

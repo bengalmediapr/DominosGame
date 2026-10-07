@@ -6,6 +6,7 @@ import {
   LeaderRow, Profile, ProfileFailure, createName, leaderboard, matchPoints, newMatchId, refreshProfile, reportResult, savedProfile,
   signIn, signOut, updateProfile,
 } from '../net/profile';
+import { PublicListing, PublicTable, listTables } from '../net/lobbies';
 import { ChatLine, GuestSession, HostSession, LocalSession, Session, TableConfig } from '../net/session';
 import type { TableEvent } from '../net/table';
 import {
@@ -69,6 +70,10 @@ export class App {
   private profile: Profile | null = savedProfile();
   private leaders: LeaderRow[] | 'error' | null = null;
   private profileNotice: { text: string; ok: boolean } | null = null;
+  /** Your table on the public list, while its lobby is open. */
+  private listing: PublicListing | null = null;
+  private tables: PublicTable[] | 'error' | null = null;
+  private tablesTimer: ReturnType<typeof setInterval> | null = null;
   /** Identifies the match on screen, so its result is counted once. */
   private matchId = newMatchId();
   private reportedMatch: string | null = null;
@@ -132,6 +137,7 @@ export class App {
   }
 
   private leaveSession(render = true): void {
+    this.setPublic(false);
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.offChat?.();
@@ -183,7 +189,25 @@ export class App {
     return this.profile?.name ?? this.steamName ?? `${t().guest} ${Math.floor(Math.random() * 90 + 10)}`;
   }
 
-  private async hostOnline(viaSteam: boolean): Promise<void> {
+  /** List (or unlist) the table you're hosting so anyone can find it. */
+  private setPublic(on: boolean): void {
+    this.listing?.stop();
+    this.listing = null;
+    const host = this.session instanceof HostSession ? this.session : null;
+    const code = host?.lobby()?.code;
+    if (!on || !host || !code) return;
+    this.listing = new PublicListing(code, () => {
+      const lobby = host.lobby();
+      return lobby && { host: this.myName(), mode: lobby.mode, humans: lobby.seats.filter((x) => x.kind === 'human').length };
+    });
+  }
+
+  private refreshTables(): void {
+    void listTables().then((rows) => { this.tables = rows; }, () => { this.tables = 'error'; })
+      .then(() => { if (this.screen === 'online') this.render(); });
+  }
+
+  private async hostOnline(viaSteam: boolean, listed = false): Promise<void> {
     this.notice = t().connecting;
     this.render();
     try {
@@ -191,6 +215,7 @@ export class App {
         ? await hostOnSteam(this.steam)
         : tabsOnly() ? hostInTabs() : await hostOnInternet();
       this.use(new HostSession(this.config(), transport, this.myName()));
+      this.setPublic(listed);
       this.notice = null;
       this.screen = 'lobby';
       this.scene.setMode('menu');
@@ -269,6 +294,8 @@ export class App {
       return;
     }
     const v = this.view();
+    if (v && this.listing) this.setPublic(false); // the game started: off the list
+    else this.listing?.refresh();
     if (v && this.screen === 'lobby') this.enterGame();
     if (v) {
       if (v.match.history.length < this.historyLength) {
@@ -467,6 +494,10 @@ export class App {
       case 'online': this.notice = null; this.screen = 'online'; this.render(); break;
       case 'host-steam': void this.hostOnline(true); break;
       case 'host-tabs': void this.hostOnline(false); break;
+      case 'host-public': void this.hostOnline(false, true); break;
+      case 'toggle-public': this.setPublic(!this.listing); this.render(); break;
+      case 'join-public': void this.joinByCode(value!); break;
+      case 'refresh-tables': this.refreshTables(); break;
       case 'invite': (this.session as HostSession | null)?.invite(); break;
       case 'lobby-mode': (this.session as HostSession).setMode(value as Mode); this.render(); break;
       case 'start': (this.session as HostSession).start(); break;
@@ -599,6 +630,7 @@ export class App {
       playable: h && v?.phase.name === 'playing' && h.current === ME && !h.result
         ? legalMoves(h).map((m) => `${m.tile.join('-')}:${m.side}`) : [],
       selected: this.selected?.join('-') ?? null,
+      listed: !!this.listing,
       lobby: lobby ? { code: lobby.code, me: lobby.me, seats: lobby.seats.map((s) => s.kind), names: lobby.seats.map((s) => s.name) } : null,
       notice: this.notice,
       chat: this.chatLines.map((l) => `${l.name}: ${l.text}`),
@@ -642,6 +674,13 @@ export class App {
     this.ui.className = `ui ui-${this.screen}`;
     this.animateOverlay = false;
     this.renderChat();
+    if (this.screen === 'online' && !this.tablesTimer) {
+      this.refreshTables();
+      this.tablesTimer = setInterval(() => this.refreshTables(), 6000);
+    } else if (this.screen !== 'online' && this.tablesTimer) {
+      clearInterval(this.tablesTimer);
+      this.tablesTimer = null;
+    }
     const v = this.view();
     if (this.screen === 'game' && v) {
       const h = v.match.hand;
@@ -709,9 +748,22 @@ export class App {
       ? `<button class="btn primary" data-action="host-steam">${s.createTable}</button><p class="note">${s.steamJoinHint}</p>`
       : platform.isDesktop ? `<p class="note">${s.steamMissing}</p>` : '';
     // Tab-to-tab tables need no Steam: handy for trying online play on one computer.
+    const list = this.tables === null ? `<p class="note">${s.loading}</p>`
+      : this.tables === 'error' ? `<p class="note">${s.tablesOffline}</p>`
+      : this.tables.length === 0 ? `<p class="note">${s.noTables}</p>`
+      : `<ul class="public-tables">${this.tables.map((tb) => `<li>
+          <span class="pt-host">${esc(tb.host)}</span>
+          <span class="pt-mode">${tb.mode === 'ruleta' ? s.ruleta : s.parejas}</span>
+          <span class="pt-seats">${tb.humans}/4</span>
+          <button class="btn small" data-action="join-public" data-value="${esc(tb.code)}">${s.join}</button></li>`).join('')}</ul>`;
+    const publicBox = this.steam ? '' : `<section class="online-box">
+        <h3>${s.publicTables} <button class="btn small ghost" data-action="refresh-tables" aria-label="${s.refresh}">↻</button></h3>
+        ${list}
+      </section>`;
     const tabs = this.steam ? '' : `<section class="online-box">
         <h3>${s.tabsTitle}</h3><p class="note">${s.tabsDesc}</p>
-        <button class="btn" data-action="host-tabs">${s.createTable}</button>
+        <div class="row"><button class="btn primary" data-action="host-public">${s.createPublic}</button>
+        <button class="btn" data-action="host-tabs">${s.createPrivate}</button></div>
         <form id="join-form" class="join-row">
           <label for="join-code">${s.codeLabel}</label>
           <input id="join-code" maxlength="6" autocomplete="off" spellcheck="false" placeholder="ABCD">
@@ -723,7 +775,7 @@ export class App {
       <p class="note playing-as">${s.playingAs} <b>${esc(this.myNameForDisplay())}</b>
         <button class="btn small ghost" data-action="profile">${this.profile ? s.change : s.chooseName}</button></p>
       ${this.notice ? `<p class="notice">${this.notice}</p>` : ''}
-      ${steam}${tabs}
+      ${steam}${publicBox}${tabs}
       <button class="btn ghost" data-action="menu">${s.back}</button>
     </main>`;
   }
@@ -754,7 +806,9 @@ export class App {
     return `<main class="screen panel lobby">
       <h2>${s.lobbyTitle}</h2>
       ${lobby.code ? `<p class="code">${s.codeLabel}: <b>${lobby.code}</b></p>` : ''}
-      ${lobby.code && lobby.isHost ? `<p class="note">${s.keepOpen}</p>` : ''}
+      ${lobby.code && lobby.isHost ? `<p class="note">${s.keepOpen}</p>
+        <p class="note visibility">${this.listing ? s.publicOn : s.privateOn}
+          <button class="btn small ghost" data-action="toggle-public">${this.listing ? s.makePrivate : s.makePublic}</button></p>` : ''}
       <ul class="seats">${seats}</ul>
       ${lobby.isHost ? `<p class="note">${s.seatHelp}</p>` : ''}
       ${modes}

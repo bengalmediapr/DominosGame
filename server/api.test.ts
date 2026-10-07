@@ -84,6 +84,32 @@ describe('name server', () => {
     expect((await call('POST', '/api/login', { name: 'Pepo', pin: '2222' })).status).toBe(200);
   });
 
+  it('lists public tables while their host keeps them fresh, and only the host can change them', async () => {
+    const secret = 'a'.repeat(32);
+    expect((await call('POST', '/api/tables', { code: 'ABCDE', host: 'Tito', mode: 'parejas', humans: 1, secret })).status).toBe(200);
+    await call('POST', '/api/tables', { code: 'FGHJK', host: 'Nena', mode: 'ruleta', humans: 4, secret: 'b'.repeat(32) }); // full: hidden
+    expect((await call('GET', '/api/tables')).body.tables).toEqual([{ code: 'ABCDE', host: 'Tito', mode: 'parejas', humans: 1 }]);
+    // Someone else can't take over the code, or close it.
+    expect((await call('POST', '/api/tables', { code: 'ABCDE', host: 'Pillo', mode: 'ruleta', humans: 1, secret: 'c'.repeat(32) })).status).toBe(409);
+    await call('POST', '/api/tables/close', { code: 'ABCDE', secret: 'c'.repeat(32) });
+    expect((await call('GET', '/api/tables')).body.tables).toHaveLength(1);
+    await call('POST', '/api/tables', { code: 'ABCDE', host: 'Tito', mode: 'parejas', humans: 2, secret });
+    expect((await call('GET', '/api/tables')).body.tables[0].humans).toBe(2);
+    await call('POST', '/api/tables/close', { code: 'ABCDE', secret });
+    expect((await call('GET', '/api/tables')).body.tables).toEqual([]);
+  });
+
+  it('drops tables whose host stopped refreshing them', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await call('POST', '/api/tables', { code: 'ABCDE', host: 'Tito', mode: 'parejas', humans: 1, secret: 'a'.repeat(32) });
+      vi.setSystemTime(Date.now() + 60_000);
+      expect((await call('GET', '/api/tables')).body.tables).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('says so when no database is bound', async () => {
     const res = await handle(new Request('https://capicu.test/api/leaderboard'), {});
     expect(res.status).toBe(503);
