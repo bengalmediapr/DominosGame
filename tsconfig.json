@@ -15,11 +15,14 @@
     "isolatedModules": true,
     "noEmit": true,
     "types": [
-      "vite/client"
+      "vite/client",
+      "node"
     ]
   },
   "include": [
     "src",
+    "server",
+    "functions",
     "tests",
     "vite.config.ts"
   ],

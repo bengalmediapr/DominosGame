@@ -153,7 +153,7 @@ html, body {
 #app { position: relative; }
 .gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .ui { position: absolute; inset: 0; pointer-events: none; }
-.ui button, .ui input, .ui label, .ui form, .ui .seg, .ui .card, .ui .option-row, .ui .rules, .ui .online-box { pointer-events: auto; }
+.ui button, .ui input, .ui label, .ui form, .ui .seg, .ui .card, .ui .option-row, .ui .rules, .ui .online-box, .ui .leaders { pointer-events: auto; }
 .ui .screen { background: transparent; }
 .ui-menu .screen, .ui-options .screen, .ui-howto .screen {
   background: radial-gradient(ellipse at 50% 50%, rgba(18, 10, 24, 0.25), rgba(18, 10, 24, 0.85) 75%);
@@ -377,3 +377,56 @@ html, body {
 .seat-tag { font-size: 0.85rem; background: rgba(255, 255, 255, 0.15); padding: 0.1rem 0.6rem; border-radius: 999px; }
 .lobby .row { flex-wrap: wrap; align-items: center; z-index: 1; }
 .tag.human .nameplate { border-color: rgba(255, 201, 60, 0.45); }
+
+/* ---------- names, points and leaderboard ---------- */
+.name-chip { position: absolute; top: 16px; right: 16px; font-family: var(--body); font-weight: 700; z-index: 2; }
+.name-chip b { color: var(--gold); }
+.playing-as { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; justify-content: center; z-index: 1; }
+.profile .join-row input { text-transform: none; letter-spacing: 0.02em; width: 12em; }
+.notice.ok { color: #9be89b; }
+.stats { list-style: none; display: flex; gap: 0.5rem; margin: 0; padding: 0; z-index: 1; flex-wrap: wrap; justify-content: center; }
+.stats li {
+  display: flex; flex-direction: column; align-items: center; min-width: 5.5rem;
+  background: rgba(0, 0, 0, 0.35); border-radius: 12px; padding: 0.4rem 0.8rem; font-size: 0.85rem;
+}
+.stats b { font-family: var(--display); font-weight: 400; font-size: 1.6rem; color: var(--gold); }
+.profile h3 { margin: 0.4rem 0 0; font-family: var(--display); font-weight: 400; font-size: 1.4rem; z-index: 1; }
+.leaders {
+  margin: 0; padding: 0 0 0 2.2rem; width: min(480px, 100%); max-height: 34vh; overflow-y: auto; z-index: 1;
+  display: grid; gap: 0.3rem;
+}
+.leaders li { background: rgba(20, 8, 30, 0.6); border-radius: 10px; padding: 0.35rem 0.8rem; }
+.leaders li::marker { font-family: var(--display); color: var(--gold); }
+.leaders li > span { display: inline-block; }
+.leaders .leader-name { width: 45%; font-weight: 700; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; }
+.leaders .leader-wins { float: right; opacity: 0.75; }
+.leaders li.me { outline: 2px solid var(--gold); }
+
+/* ---------- lobby chairs ---------- */
+.seat-num { font-size: 0.8rem; opacity: 0.7; min-width: 3.6rem; }
+.seat-row .seat-name { flex: 1; }
+.seat-move { display: flex; gap: 2px; }
+.seat-move .seg-btn { padding: 0.15rem 0.5rem; font-size: 0.8rem; }
+
+/* ---------- chat ---------- */
+.chat {
+  position: fixed; left: 16px; bottom: 16px; width: min(340px, calc(100vw - 32px)); z-index: 5;
+  display: flex; flex-direction: column; gap: 6px; pointer-events: none;
+}
+.chat[hidden] { display: none; }
+.chat-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.chat-log li {
+  align-self: flex-start; max-width: 100%; overflow-wrap: anywhere;
+  background: rgba(10, 4, 20, 0.62); border-radius: 10px; padding: 0.25rem 0.65rem; font-size: 0.92rem;
+}
+.chat-log li b { color: var(--gold); margin-right: 0.3rem; }
+.chat-log li.mine b { color: var(--team-0); }
+.chat-form { pointer-events: auto; }
+.chat-form input {
+  font: inherit; font-size: 0.92rem; width: 100%; padding: 0.45rem 0.75rem; border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.25); background: rgba(0, 0, 0, 0.5); color: var(--text);
+}
+.chat-form input:focus-visible { outline: none; border-color: var(--gold); }
+@media (max-width: 700px) {
+  .ui-game ~ .chat { bottom: auto; top: 64px; }
+}

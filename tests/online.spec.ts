@@ -94,6 +94,47 @@ test('a guest who leaves is replaced by the AI', async ({ browser }) => {
   await guest.locator('#join-form button[type=submit]').click();
   await expect.poll(async () => (await state(host)).lobby?.seats[2]).toBe('human');
   await guest.close();
-  await expect.poll(async () => (await state(host)).lobby?.seats[2], { timeout: 15_000 }).toBe('ai');
+  await expect.poll(async () => (await state(host)).lobby?.seats[2], { timeout: 40_000 }).toBe('ai');
+  await context.close();
+});
+
+test('chat at the table, and the host moves people between chairs', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const host = await context.newPage();
+  const guest = await context.newPage();
+  const errors: string[] = [];
+  for (const p of [host, guest]) p.on('pageerror', (e) => errors.push(e.message));
+  await open(host);
+  await host.locator('[data-action=host-tabs]').click();
+  const code = (await host.locator('.lobby .code b').textContent())!;
+  await open(guest);
+  await guest.locator('#join-code').click();
+  await guest.keyboard.type(code);
+  await guest.keyboard.press('Enter');
+  await expect.poll(async () => (await state(guest)).lobby?.me).toBe(2);
+
+  // Chat: T opens it, Enter sends, and markup arrives as plain text.
+  await guest.keyboard.press('t');
+  await guest.keyboard.type('¡Wepa! <b>dale</b>');
+  await guest.keyboard.press('Enter');
+  await expect(host.locator('.chat-log li').last()).toContainText('¡Wepa! <b>dale</b>');
+  await expect(host.locator('.chat-log b')).toHaveCount(1); // only the speaker's name is bold
+  await host.locator('#chat-input').click();
+  await host.keyboard.type('Ahora mismo');
+  await host.keyboard.press('Enter');
+  await expect(guest.locator('.chat-log li')).toHaveCount(2);
+  await expect(guest.locator('.chat-log li.mine')).toHaveCount(1); // their own line
+
+  // The guest moves from chair 3 to chair 2 (the host's right), so they're no longer partners.
+  await host.locator('.seat-row').nth(2).locator('[data-action=seat-swap]').first().click();
+  await expect.poll(async () => (await state(guest)).lobby?.me).toBe(1);
+  await host.locator('[data-action=start]').click();
+  await expect.poll(async () => (await state(guest)).screen).toBe('game');
+  await guest.keyboard.press('t');
+  await guest.keyboard.type('buena suerte');
+  await guest.keyboard.press('Enter');
+  await expect.poll(async () => ((await state(host)) as unknown as { chat: string[] }).chat.at(-1)).toContain('buena suerte');
+  await expect(host.locator('.tag[data-seat="1"] .bubble')).toContainText('buena suerte'); // over the speaker's head
+  expect(errors).toEqual([]);
   await context.close();
 });

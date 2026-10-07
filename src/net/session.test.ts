@@ -124,4 +124,56 @@ describe('joining a table that does not answer', () => {
     vi.advanceTimersByTime(200);
     expect(lost.ended).toBe('notFound');
   });
+
+  it('keeps names unique at the table', () => {
+    const hub = new Hub();
+    const host = new HostSession(config, new MemoryTransport(hub, 'H', 'H'), 'Tito');
+    new GuestSession(new MemoryTransport(hub, 'G1', 'H'), 'tito');
+    new GuestSession(new MemoryTransport(hub, 'G2', 'H'), 'Tito');
+    vi.advanceTimersByTime(20);
+    expect(host.lobby()!.seats.map((s) => s.name)).toEqual(['Tito', 'Tito 3', 'tito 2', null]);
+  });
+
+  it('relays chat to everyone, cleaned up and with the speaker\'s seat and name', () => {
+    const { host, g1, g2 } = setup();
+    const heard: string[] = [];
+    for (const [who, session] of [['host', host], ['g1', g1], ['g2', g2]] as const) {
+      session.onChat((l) => heard.push(`${who}<${l.seat}:${l.name}> ${l.text}`));
+    }
+    g1.chat('  ¡Wepa!\n  dale  ');
+    vi.advanceTimersByTime(20);
+    expect(heard.sort()).toEqual(['g1<2:Beto> ¡Wepa! dale', 'g2<2:Beto> ¡Wepa! dale', 'host<2:Beto> ¡Wepa! dale']);
+  });
+
+  it('stops a player who floods the chat', () => {
+    const { host, g1 } = setup();
+    let count = 0;
+    host.onChat(() => count++);
+    for (let i = 0; i < 12; i++) g1.chat(`hola ${i}`);
+    vi.advanceTimersByTime(20);
+    expect(count).toBe(5);
+    vi.advanceTimersByTime(10_000);
+    g1.chat('ya');
+    vi.advanceTimersByTime(20);
+    expect(count).toBe(6);
+  });
+
+  it('lets the host move players to other chairs, including their own', () => {
+    const { host, g1, g2 } = setup();
+    host.swapSeats(0, 3); // the host moves to chair 3
+    vi.advanceTimersByTime(20);
+    expect(host.lobby()!.me).toBe(3);
+    host.swapSeats(1, 2); // Carla and Beto trade chairs
+    vi.advanceTimersByTime(20);
+    expect(host.lobby()!.seats.map((s) => s.name)).toEqual([null, 'Beto', 'Carla', 'Ana']);
+    expect(g1.lobby()!.me).toBe(1);
+    expect(g2.lobby()!.me).toBe(2);
+    host.start();
+    vi.advanceTimersByTime(20);
+    expect(host.view()!.me).toBe(3);
+    expect(host.view()!.isController).toBe(true);
+    expect(g1.view()!.isController).toBe(false);
+    host.swapSeats(0, 1); // not once the match has started
+    expect(host.view()!.seats.map((s) => s.name)).toEqual(['Ana', null, 'Beto', 'Carla']); // rotated: you first
+  });
 });

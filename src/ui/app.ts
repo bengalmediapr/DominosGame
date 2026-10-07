@@ -2,12 +2,15 @@ import {
   CHAMBERS, MatchState, Mode, Move, Rules, Side, fireChance, legalMoves, teamOf,
 } from '../engine/game';
 import { Tile, handPips, sameTile } from '../engine/tiles';
-import { GuestSession, HostSession, LocalSession, Session, TableConfig } from '../net/session';
+import {
+  LeaderRow, Profile, ProfileFailure, leaderboard, matchPoints, newMatchId, refreshProfile, reportResult, savedProfile, setName,
+} from '../net/profile';
+import { ChatLine, GuestSession, HostSession, LocalSession, Session, TableConfig } from '../net/session';
 import type { TableEvent } from '../net/table';
 import {
   NetError, SteamBridge, Transport, hostInTabs, hostOnInternet, hostOnSteam, joinInTabs, joinOnInternet, joinOnSteam,
 } from '../net/transport';
-import { View, toEngine } from '../net/view';
+import { View, toEngine, toView } from '../net/view';
 import { ACHIEVEMENTS, platform } from '../platform';
 import { SEAT_LOOKS } from '../three/characters';
 import { TableScene } from '../three/scene';
@@ -16,7 +19,7 @@ import { setLang, t } from './i18n';
 import { Settings, loadSavedMatch, loadSettings, saveMatch, saveSettings } from './settings';
 import { star } from './tileSvg';
 
-type Screen = 'menu' | 'options' | 'howto' | 'online' | 'lobby' | 'game';
+type Screen = 'menu' | 'options' | 'howto' | 'online' | 'lobby' | 'game' | 'profile';
 const ME = 0; // in every view you sit at seat 0
 const DELAYS = { slow: 1300, normal: 800, fast: 350 };
 
@@ -30,6 +33,12 @@ function tabsOnly(): boolean {
 }
 
 interface Bubble { text: string; big?: boolean }
+
+/** Text from other players goes into innerHTML: escape it. */
+const esc = (text: string): string =>
+  text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
+const CHAT_LINES = 8;
 
 export class App {
   private settings: Settings = loadSettings();
@@ -51,12 +60,30 @@ export class App {
   private historyLength = 0;
   private readonly scene: TableScene;
   private readonly ui: HTMLElement;
+  private readonly chatBox: HTMLElement;
+  private readonly chatLog: HTMLElement;
+  private readonly chatInput: HTMLInputElement;
+  private chatLines: { name: string; text: string; mine: boolean }[] = [];
+  private offChat: (() => void) | null = null;
+  private profile: Profile | null = savedProfile();
+  private leaders: LeaderRow[] | 'error' | null = null;
+  private profileNotice: { text: string; ok: boolean } | null = null;
+  /** Identifies the match on screen, so its result is counted once. */
+  private matchId = newMatchId();
+  private reportedMatch: string | null = null;
 
   constructor(root: HTMLElement) {
     setLang(this.settings.lang);
     setVolume(this.settings.volume);
-    root.innerHTML = '<canvas class="gl"></canvas><div class="ui"></div>';
+    // The chat lives outside .ui, which is redrawn on every change: typing must survive redraws.
+    root.innerHTML = `<canvas class="gl"></canvas><div class="ui"></div>
+      <aside class="chat" hidden><ul class="chat-log" aria-live="polite"></ul>
+        <form id="chat-form" class="chat-form"><input id="chat-input" maxlength="160" autocomplete="off"></form></aside>`;
     this.ui = root.querySelector('.ui')!;
+    this.chatBox = root.querySelector('.chat')!;
+    this.chatLog = root.querySelector('.chat-log')!;
+    this.chatInput = root.querySelector('#chat-input')!;
+    this.chatInput.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.chatInput.blur(); });
     this.scene = new TableScene(root.querySelector('canvas')!);
     this.scene.onPick = (p) => (p.kind === 'tile' ? this.tryTile(p.tile) : this.chooseSide(p.side));
     this.scene.onFrame = () => this.positionTags();
@@ -65,6 +92,7 @@ export class App {
     window.addEventListener('keydown', (e) => this.onKey(e));
     (window as unknown as { __domino: unknown }).__domino = { state: () => this.debugState() };
     void this.initSteam();
+    void refreshProfile().then((p) => { this.profile = p; this.render(); }).catch(() => { /* keep the saved one */ });
     this.render();
   }
 
@@ -95,13 +123,19 @@ export class App {
     this.watching = false;
     this.resultHoldUntil = 0;
     this.historyLength = 0;
+    this.matchId = newMatchId();
+    this.chatLines = [];
     this.scene.resetMatch();
     this.unsubscribe = session.subscribe((events) => this.onEvents(events));
+    this.offChat = session.onChat((line) => this.onChatLine(line));
   }
 
   private leaveSession(render = true): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.offChat?.();
+    this.offChat = null;
+    this.chatInput.blur();
     this.session?.leave();
     this.session = null;
     this.generation++;
@@ -145,7 +179,7 @@ export class App {
   }
 
   private myName(): string {
-    return this.steamName ?? `${t().guest} ${Math.floor(Math.random() * 90 + 10)}`;
+    return this.profile?.name ?? this.steamName ?? `${t().guest} ${Math.floor(Math.random() * 90 + 10)}`;
   }
 
   private async hostOnline(viaSteam: boolean): Promise<void> {
@@ -175,7 +209,8 @@ export class App {
       this.joinWith(await joinOnInternet(code));
     } catch (err) {
       console.error(err);
-      this.notice = err instanceof NetError && err.reason === 'notFound' ? t().tableNotFound : t().couldNotConnect;
+      const reason = err instanceof NetError ? err.reason : null;
+      this.notice = reason === 'notFound' ? t().tableNotFound : reason === 'blocked' ? t().tableBlocked : t().couldNotConnect;
       this.render();
     }
   }
@@ -216,7 +251,7 @@ export class App {
     if (viewSeat === ME) return s.you;
     const v = this.view();
     const info = v?.seats[viewSeat];
-    if (info?.kind === 'human' && info.name) return info.name;
+    if (info?.kind === 'human' && info.name) return esc(info.name);
     const engineSeat = v ? toEngine(viewSeat, v.me) : viewSeat;
     return s.lookNames[SEAT_LOOKS[engineSeat]];
   }
@@ -238,6 +273,7 @@ export class App {
       if (v.match.history.length < this.historyLength) {
         this.scene.resetMatch();
         this.watching = false;
+        this.matchId = newMatchId();
       }
       this.historyLength = v.match.history.length;
     }
@@ -296,7 +332,65 @@ export class App {
     if (v?.status?.kind === 'opens' && v.match.hand.placements.length === 0 && !this.bubbles[v.status.seat]) {
       this.say(v.status.seat, `${this.nameOf(v.status.seat)} ${s.opens}`);
     }
+    if (v) this.countMatch(v);
     this.render();
+  }
+
+  /** Add the match to your points once it's over for you: it ended, or the revolver took you out. */
+  private countMatch(v: View): void {
+    const m = v.match;
+    const over = v.phase.name === 'matchOver' || (m.rules.mode === 'ruleta' && !m.alive[ME]);
+    if (!over || !this.profile || this.reportedMatch === this.matchId) return;
+    this.reportedMatch = this.matchId;
+    void reportResult({ matchId: this.matchId, ...matchPoints(m) })
+      .then(() => { this.profile = savedProfile(); })
+      .catch(() => { /* queued: sent next time */ });
+  }
+
+  // ---------- chat ----------
+
+  private onChatLine(line: ChatLine): void {
+    const me = this.session?.me ?? 0;
+    const seat = toView(line.seat, me);
+    const name = seat === ME ? t().you : line.name ? esc(line.name) : this.nameOf(seat);
+    this.chatLines = [...this.chatLines, { name, text: esc(line.text), mine: seat === ME }].slice(-CHAT_LINES);
+    if (this.screen === 'game') this.say(seat, esc(line.text), false, 4500);
+    this.render();
+  }
+
+  private renderChat(): void {
+    const open = !!this.session?.canChat && (this.screen === 'lobby' || this.screen === 'game');
+    this.chatBox.hidden = !open;
+    if (!open) return;
+    const s = t();
+    this.chatInput.placeholder = `${s.chatPlaceholder} · ${s.chatHint}`;
+    this.chatLog.innerHTML = this.chatLines
+      .map((l) => `<li class="${l.mine ? 'mine' : ''}"><b>${l.name}</b> ${l.text}</li>`).join('');
+  }
+
+  // ---------- profile ----------
+
+  private openProfile(): void {
+    this.screen = 'profile';
+    this.profileNotice = null;
+    this.leaders = null;
+    this.render();
+    void leaderboard().then((rows) => { this.leaders = rows; }, () => { this.leaders = 'error'; }).then(() => this.render());
+    void refreshProfile().then((p) => { this.profile = p; this.render(); }).catch(() => {});
+  }
+
+  private async saveName(raw: string): Promise<void> {
+    const s = t();
+    try {
+      this.profile = await setName(raw);
+      this.profileNotice = { text: s.nameSaved, ok: true };
+    } catch (err) {
+      const reason = err instanceof ProfileFailure ? err.reason : 'offline';
+      const text = { taken: s.nameTaken, invalid: s.nameInvalid, reserved: s.nameReserved, noServer: s.serverMissing }[reason as string]
+        ?? s.serverOffline;
+      this.profileNotice = { text, ok: false };
+    }
+    if (this.screen === 'profile') this.render();
   }
 
   private later(ms: number, fn: () => void): void {
@@ -304,10 +398,10 @@ export class App {
     window.setTimeout(() => { if (gen === this.generation) fn(); }, ms);
   }
 
-  private say(seat: number, text: string, big = false): void {
+  private say(seat: number, text: string, big = false, ms = 1900): void {
     const bubble = { text, big };
     this.bubbles[seat] = bubble;
-    this.later(1900, () => {
+    this.later(ms, () => {
       if (this.bubbles[seat] === bubble) {
         this.bubbles[seat] = null;
         this.render();
@@ -370,6 +464,8 @@ export class App {
       case 'invite': (this.session as HostSession | null)?.invite(); break;
       case 'lobby-mode': (this.session as HostSession).setMode(value as Mode); this.render(); break;
       case 'start': (this.session as HostSession).start(); break;
+      case 'seat-swap': (this.session as HostSession).swapSeats(Number(el.dataset.a), Number(el.dataset.b)); break;
+      case 'profile': this.openProfile(); break;
       case 'menu': this.goMenu(); break;
       case 'quit': platform.quit(); break;
       case 'fullscreen': platform.toggleFullscreen(); break;
@@ -388,6 +484,17 @@ export class App {
 
   private onSubmit(e: Event): void {
     const form = e.target as HTMLFormElement;
+    if (form.id === 'chat-form') {
+      e.preventDefault();
+      this.session?.chat(this.chatInput.value);
+      this.chatInput.value = '';
+      return;
+    }
+    if (form.id === 'name-form') {
+      e.preventDefault();
+      void this.saveName((form.querySelector('#name-input') as HTMLInputElement).value);
+      return;
+    }
     if (form.id !== 'join-form') return;
     e.preventDefault();
     const code = (form.querySelector('#join-code') as HTMLInputElement).value.trim();
@@ -409,6 +516,11 @@ export class App {
   private onKey(e: KeyboardEvent): void {
     if (e.key === 'F11') { e.preventDefault(); platform.toggleFullscreen(); return; }
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
+    if ((e.key === 't' || e.key === 'T' || e.key === '/') && !this.chatBox.hidden) {
+      e.preventDefault();
+      this.chatInput.focus();
+      return;
+    }
     if (this.screen !== 'game') {
       if (e.key === 'Escape' && this.screen !== 'menu') this.goMenu();
       return;
@@ -458,8 +570,10 @@ export class App {
       playable: h && v?.phase.name === 'playing' && h.current === ME && !h.result
         ? legalMoves(h).map((m) => `${m.tile.join('-')}:${m.side}`) : [],
       selected: this.selected?.join('-') ?? null,
-      lobby: lobby ? { code: lobby.code, me: lobby.me, seats: lobby.seats.map((s) => s.kind) } : null,
+      lobby: lobby ? { code: lobby.code, me: lobby.me, seats: lobby.seats.map((s) => s.kind), names: lobby.seats.map((s) => s.name) } : null,
       notice: this.notice,
+      chat: this.chatLines.map((l) => `${l.name}: ${l.text}`),
+      profile: this.profile?.name ?? null,
     };
   }
 
@@ -480,10 +594,25 @@ export class App {
     const views: Record<Screen, () => string> = {
       menu: () => this.menuView(), options: () => this.optionsView(), howto: () => this.howToView(),
       online: () => this.onlineView(), lobby: () => this.lobbyView(), game: () => this.gameView(),
+      profile: () => this.profileView(),
     };
+    // Redrawing replaces every element: keep what's being typed, and where.
+    const typing = this.ui.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement
+      ? document.activeElement : null;
+    const drafts = [...this.ui.querySelectorAll<HTMLInputElement>('input[id]')].map((el) => [el.id, el.value] as const);
     this.ui.innerHTML = views[this.screen]();
+    for (const [id, value] of drafts) {
+      const el = this.ui.querySelector<HTMLInputElement>(`#${id}`);
+      if (el) el.value = value;
+    }
+    if (typing) {
+      const el = this.ui.querySelector<HTMLInputElement>(`#${typing.id}`);
+      el?.focus();
+      el?.setSelectionRange(typing.selectionStart, typing.selectionEnd);
+    }
     this.ui.className = `ui ui-${this.screen}`;
     this.animateOverlay = false;
+    this.renderChat();
     const v = this.view();
     if (this.screen === 'game' && v) {
       const h = v.match.hand;
@@ -519,7 +648,11 @@ export class App {
   private menuView(): string {
     const s = t();
     const canContinue = this.savedMatch() !== null;
+    const who = this.profile
+      ? `👤 ${esc(this.profile.name)} · <b>${this.profile.points}</b> ${s.pointsLabel.toLowerCase()}`
+      : `👤 ${s.chooseName}`;
     return `<main class="screen menu">
+      <button class="btn small name-chip" data-action="profile">${who}</button>
       ${this.flag()}
       <h1 class="logo">${s.title}</h1>
       <p class="tagline">${s.tagline}</p>
@@ -534,6 +667,7 @@ export class App {
         <div class="row">
           <button class="btn small" data-action="howto">${s.howTo}</button>
           <button class="btn small" data-action="options">${s.options}</button>
+          <button class="btn small" data-action="profile">🏆 ${s.leaderboard}</button>
           ${platform.isDesktop ? `<button class="btn small ghost" data-action="quit">${s.quit}</button>` : ''}
         </div>
       </nav>
@@ -557,6 +691,8 @@ export class App {
       </section>`;
     return `<main class="screen panel">
       <h2>${s.online}</h2>
+      <p class="note playing-as">${s.playingAs} <b>${esc(this.myNameForDisplay())}</b>
+        <button class="btn small ghost" data-action="profile">${this.profile ? s.change : s.chooseName}</button></p>
       ${this.notice ? `<p class="notice">${this.notice}</p>` : ''}
       ${steam}${tabs}
       <button class="btn ghost" data-action="menu">${s.back}</button>
@@ -570,12 +706,17 @@ export class App {
       return `<main class="screen panel"><h2>${s.lobbyTitle}</h2><p class="notice">${this.notice ?? s.connecting}</p>
         <button class="btn ghost" data-action="menu">${s.leaveTable}</button></main>`;
     }
+    const { hostSeat } = lobby;
     const seats = lobby.seats.map((seat, p) => {
       const look = s.lookNames[SEAT_LOOKS[p]];
-      const who = seat.kind === 'human' ? seat.name ?? s.guest : `${look} · ${s.seatAi}`;
-      const tags = [p === lobby.me ? s.seatYou : '', p === 0 ? s.seatHost : ''].filter(Boolean).join(', ');
+      const who = seat.kind === 'human' ? esc(seat.name ?? s.guest) : `${look} · ${s.seatAi}`;
+      const tags = [p === lobby.me ? s.seatYou : '', p === hostSeat ? s.seatHost : ''].filter(Boolean).join(', ');
       const team = lobby.mode === 'parejas' ? `team-${teamOf(p)}` : '';
-      return `<li class="seat-row ${seat.kind} ${team}"><span class="seat-name">${who}</span>${tags ? `<span class="seat-tag">${tags}</span>` : ''}</li>`;
+      const move = lobby.isHost
+        ? `<span class="seat-move"><button class="seg-btn" data-action="seat-swap" data-a="${p}" data-b="${(p + 3) % 4}" title="${s.moveUp}" aria-label="${s.moveUp}">▲</button>
+           <button class="seg-btn" data-action="seat-swap" data-a="${p}" data-b="${(p + 1) % 4}" title="${s.moveDown}" aria-label="${s.moveDown}">▼</button></span>`
+        : '';
+      return `<li class="seat-row ${seat.kind} ${team}"><span class="seat-num">${s.seatN} ${p + 1}</span><span class="seat-name">${who}</span>${tags ? `<span class="seat-tag">${tags}</span>` : ''}${move}</li>`;
     }).join('');
     const modes = lobby.isHost
       ? `<div class="option-row"><span class="option-label">${s.mode}</span><div class="seg">${(['ruleta', 'parejas'] as Mode[])
@@ -585,12 +726,46 @@ export class App {
       <h2>${s.lobbyTitle}</h2>
       ${lobby.code ? `<p class="code">${s.codeLabel}: <b>${lobby.code}</b></p>` : ''}
       <ul class="seats">${seats}</ul>
+      ${lobby.isHost ? `<p class="note">${s.seatHelp}</p>` : ''}
       ${modes}
       <div class="row">
         ${lobby.canInvite ? `<button class="btn" data-action="invite">${s.inviteFriends}</button>` : ''}
         ${lobby.isHost ? `<button class="btn primary" data-action="start">${s.start}</button>` : `<p class="note">${s.waitingStart}</p>`}
       </div>
       <button class="btn ghost" data-action="menu">${s.leaveTable}</button>
+    </main>`;
+  }
+
+  private myNameForDisplay(): string {
+    return this.profile?.name ?? this.steamName ?? t().guest;
+  }
+
+  private profileView(): string {
+    const s = t();
+    const p = this.profile;
+    const notice = this.profileNotice
+      ? `<p class="notice ${this.profileNotice.ok ? 'ok' : ''}">${this.profileNotice.text}</p>` : '';
+    const stats = p
+      ? `<ul class="stats"><li><b>${p.points}</b>${s.pointsLabel}</li><li><b>${p.wins}</b>${s.winsLabel}</li>
+          <li><b>${p.played}</b>${s.playedLabel}</li><li><b>#${p.rank}</b>${s.rankLabel}</li></ul>` : '';
+    const rows = this.leaders === null ? `<p class="note">${s.loading}</p>`
+      : this.leaders === 'error' ? `<p class="note">${s.serverOffline}</p>`
+      : this.leaders.length === 0 ? `<p class="note">${s.noLeaders}</p>`
+      : `<ol class="leaders">${this.leaders.map((r) => `<li class="${p && r.name === p.name ? 'me' : ''}">
+          <span class="leader-name">${esc(r.name)}</span><span><b>${r.points}</b> ${s.pointsLabel.toLowerCase()}</span>
+          <span class="leader-wins">${r.wins}/${r.played}</span></li>`).join('')}</ol>`;
+    return `<main class="screen panel profile">
+      <h2>${p ? s.yourName : s.chooseName}</h2>
+      <form id="name-form" class="join-row">
+        <input id="name-input" maxlength="16" autocomplete="nickname" spellcheck="false" value="${esc(p?.name ?? this.steamName ?? '')}" placeholder="${s.yourName}">
+        <button class="btn small" type="submit">${s.save}</button>
+      </form>
+      <p class="note">${s.nameHint}</p>
+      ${notice}${stats}
+      <h3>🏆 ${s.leaderboard}</h3>
+      ${rows}
+      <p class="note">${s.pointsNote}</p>
+      <button class="btn" data-action="menu">${s.back}</button>
     </main>`;
   }
 

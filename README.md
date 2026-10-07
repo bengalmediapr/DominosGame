@@ -56,6 +56,9 @@ Node 22 comes from `.nvmrc`. Every push to `main` redeploys `https://<project>.p
 other branch gets its own preview URL. Online play in the browser uses the tab-to-tab test mode
 (Steam networking only exists in the desktop build).
 
+Names, points and the online relay need a D1 database and a TURN key on Cloudflare: see
+[docs/NOMBRES_Y_PUNTOS.md](docs/NOMBRES_Y_PUNTOS.md).
+
 ## Package
 
 ```bash

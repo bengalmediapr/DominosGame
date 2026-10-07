@@ -1,4 +1,5 @@
 import type { Mode } from '../engine/game';
+import { API_BASE } from './api';
 import type { Intent, SeatInfo, Snapshot, TableEvent } from './table';
 
 /** Everything that travels between players. The host is the only one who runs the rules. */
@@ -9,9 +10,12 @@ export type NetMessage =
   | { t: 'snapshot'; snapshot: Snapshot; events: TableEvent[] }
   | { t: 'intent'; intent: Intent }
   | { t: 'bye' }
-  | { t: 'ping' };
+  | { t: 'ping' }
+  /** A guest says something; the host checks it and passes it on to everyone as a chatLine. */
+  | { t: 'chat'; text: string }
+  | { t: 'chatLine'; seat: number; name: string; text: string };
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export interface Transport {
   readonly selfId: string;
@@ -91,6 +95,8 @@ export async function joinOnSteam(steam: SteamBridge, lobbyId: string): Promise<
 
 interface Envelope { from: string; to: string; msg: NetMessage }
 
+const TAB_SILENCE_MS = 20_000;
+
 class TabTransport implements Transport {
   private readonly channel: BroadcastChannel;
   private readonly lastSeen = new Map<string, number>();
@@ -108,11 +114,17 @@ class TabTransport implements Transport {
       if (msg.t === 'bye') return this.dropPeer(from);
       for (const cb of this.messageCbs) cb(from, msg);
     };
-    // Tabs can close without saying goodbye: ping, and drop peers that go quiet.
+    // Tabs can close without saying goodbye: ping, and drop peers that go quiet. Generous, because a
+    // tab loading the 3D scene on a slow machine can stall for several seconds.
+    let lastTick = Date.now();
     this.heartbeat = setInterval(() => {
       this.post('*', { t: 'ping' });
       const now = Date.now();
-      for (const [peer, seen] of this.lastSeen) if (now - seen > 6000) this.dropPeer(peer);
+      // If this tab was the one frozen, its peers' messages are still queued: they weren't silent.
+      const frozen = now - lastTick > 5000;
+      lastTick = now;
+      if (frozen) return;
+      for (const [peer, seen] of this.lastSeen) if (now - seen > TAB_SILENCE_MS) this.dropPeer(peer);
     }, 1500);
   }
 
@@ -164,7 +176,8 @@ export function joinInTabs(code: string): Transport {
 /**
  * Lets the web build play across the internet without a server of our own: PeerJS's free public
  * broker only introduces the browsers (table code -> peer id); game messages then flow directly
- * between them over WebRTC, falling back to PeerJS's TURN relays when a direct path is blocked.
+ * between them over WebRTC. Many home routers block that direct path, so both sides also get relay
+ * (TURN) servers from our own /api/ice (Cloudflare), falling back to PeerJS's public ones.
  */
 const PEER_PREFIX = 'capicu-table-';
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
@@ -178,7 +191,8 @@ type PeerInstance = import('peerjs').Peer;
 type DataConnection = import('peerjs').DataConnection;
 
 export class NetError extends Error {
-  constructor(readonly reason: 'unreachable' | 'notFound') {
+  /** unreachable: no broker; notFound: no table with that code; blocked: the table is there, but no network path to it. */
+  constructor(readonly reason: 'unreachable' | 'notFound' | 'blocked') {
     super(reason);
   }
 }
@@ -230,6 +244,24 @@ class PeerTransport implements Transport {
 
 const loadPeer = (): Promise<PeerLib> => import('peerjs');
 
+/** Relay servers from our server, or null to use PeerJS's defaults. */
+async function iceServers(): Promise<RTCIceServer[] | null> {
+  try {
+    const res = await fetch(`${API_BASE}/ice`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return null;
+    const { iceServers: servers } = await res.json() as { iceServers?: RTCIceServer[] };
+    return servers?.length ? [...servers, { urls: 'stun:stun.l.google.com:19302' }] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function newPeer(id?: string): Promise<PeerInstance> {
+  const [{ Peer }, ice] = await Promise.all([loadPeer(), iceServers()]);
+  const options = { debug: 0 as const, ...(ice ? { config: { iceServers: ice } } : {}) };
+  return id ? new Peer(id, options) : new Peer(options);
+}
+
 /** Resolves once the broker has registered us, or fails after `ms`. */
 function opened(peer: PeerInstance, ms: number): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -243,11 +275,10 @@ function opened(peer: PeerInstance, ms: number): Promise<string> {
 }
 
 export async function hostOnInternet(): Promise<Transport & { code: string }> {
-  const { Peer } = await loadPeer();
   // A code already in use on the broker is rare; just pick another.
   for (let attempt = 0; attempt < 4; attempt++) {
     const code = tableCode();
-    const peer = new Peer(PEER_PREFIX + code, { debug: 0 });
+    const peer = await newPeer(PEER_PREFIX + code);
     try {
       const id = await opened(peer, 12_000);
       return Object.assign(new PeerTransport(peer, id, id), { code });
@@ -260,8 +291,7 @@ export async function hostOnInternet(): Promise<Transport & { code: string }> {
 }
 
 export async function joinOnInternet(code: string): Promise<Transport> {
-  const { Peer } = await loadPeer();
-  const peer = new Peer({ debug: 0 });
+  const peer = await newPeer();
   const selfId = await opened(peer, 12_000).catch((err) => {
     peer.destroy();
     throw err;
@@ -271,7 +301,9 @@ export async function joinOnInternet(code: string): Promise<Transport> {
   const conn = peer.connect(hostId, { reliable: true, serialization: 'json' });
   transport.adopt(conn);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { transport.close(); reject(new NetError('notFound')); }, 15_000);
+    // The broker answers at once when no table has this code; silence means the table exists but the
+    // two networks couldn't open a path to each other, even through the relays.
+    const timer = setTimeout(() => { transport.close(); reject(new NetError('blocked')); }, 20_000);
     conn.once('open', () => { clearTimeout(timer); resolve(transport); });
     peer.on('error', (err) => {
       if (err.type !== 'peer-unavailable') return;
