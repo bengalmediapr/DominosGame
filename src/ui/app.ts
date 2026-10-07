@@ -19,7 +19,7 @@ import { TableScene } from '../three/scene';
 import { bang, clack, coqui, dryClick, fanfare, setVolume, spin } from './audio';
 import { setLang, t } from './i18n';
 import { Settings, loadSavedMatch, loadSettings, saveMatch, saveSettings } from './settings';
-import { star } from './tileSvg';
+import { star, tileMarkup } from './tileSvg';
 import { Look, assignLooks, isLook } from './cast';
 
 type Screen = 'title' | 'menu' | 'options' | 'howto' | 'online' | 'lobby' | 'game' | 'profile';
@@ -1096,6 +1096,24 @@ export class App {
     </main>`;
   }
 
+  /** A player's leftover tiles, small. */
+  private tilesSvg(tiles: readonly (readonly [number, number])[]): string {
+    if (!tiles.length) return '<span class="res-tiles empty">—</span>';
+    const w = 18, h = 36, gap = 4;
+    const inner = tiles.map((tl, i) => tileMarkup(i * (w + gap), 1, w, h, tl[0], tl[1])).join('');
+    return `<svg class="res-tiles" viewBox="0 0 ${tiles.length * (w + gap)} ${h + 2}" width="${tiles.length * (w + gap)}" height="${h + 2}" aria-hidden="true">${inner}</svg>`;
+  }
+
+  /** Ruleta has no team score: each player's running total is the pips they took in the hands they won. */
+  private ruletaTotals(m: MatchState): number[] {
+    const totals = [0, 0, 0, 0];
+    for (const r of m.history) {
+      if (r.winnerPlayer === null) continue;
+      totals[r.winnerPlayer] += r.pipCounts.reduce((sum, c, p) => (p === r.winnerPlayer ? sum : sum + c), 0);
+    }
+    return totals;
+  }
+
   private chambers(p: number): string {
     const r = this.view()!.match.revolvers[p];
     const dots = Array.from({ length: CHAMBERS }, (_, i) => `<i class="${i < r.pulls ? 'used' : ''}"></i>`).join('');
@@ -1220,15 +1238,34 @@ export class App {
     const who = r.winnerPlayer === null ? s.tiedTranque : `${this.nameOf(r.winnerPlayer)} ${s.wonHand}`;
     const shooters = m.pendingShooters;
     const humanWon = ruleta ? r.winnerPlayer === ME : r.winnerTeam === teamOf(ME);
-    const counts = r.pipCounts.map((c, p) => (m.hand.seated[p]
-      ? `<li class="${ruleta ? (shooters.includes(p) ? 'shooter' : '') : `team-${teamOf(p)}`}">${this.nameOf(p)}<b>${c}</b></li>` : '')).join('');
+    // Everyone's leftover tiles, what they add up to, and who takes it all.
+    const totals = ruleta ? this.ruletaTotals(m) : null;
+    const rows = r.pipCounts.map((c, p) => {
+      if (!m.hand.seated[p]) return '';
+      const tiles = m.hand.hands[p].filter((tl) => tl[0] >= 0);
+      const won = ruleta ? r.winnerPlayer === p : r.winnerTeam !== null && teamOf(p) === r.winnerTeam;
+      const cls = [ruleta ? (shooters.includes(p) ? 'shooter' : '') : `team-${teamOf(p)}`, won ? 'winner' : ''].join(' ');
+      return `<li class="res-row ${cls}"><span class="res-name">${won ? '🏆 ' : ''}${this.nameOf(p)}</span>
+        ${this.tilesSvg(tiles)}<b class="res-pips">${c}</b>
+        ${totals ? `<span class="res-total" title="${s.matchTotal}">${totals[p]}</span>` : ''}</li>`;
+    }).join('');
+    const onTable = r.pipCounts.reduce((sum, c, p) => (m.hand.seated[p] ? sum + c : sum), 0);
+    const gained = ruleta ? (r.winnerPlayer === null ? 0 : onTable - r.pipCounts[r.winnerPlayer]) : r.points;
+    const taker = ruleta
+      ? (r.winnerPlayer === null ? null : this.nameOf(r.winnerPlayer))
+      : r.winnerTeam === null ? null : r.winnerTeam === teamOf(ME) ? s.us : s.them;
+    const summary = `<p class="table-total">${s.onTable}: <b>${onTable}</b> · ${taker
+      ? `${taker} <b class="${ruleta ? '' : `team-${r.winnerTeam}`}">+${gained}</b>` : s.nobodyScores}</p>`;
     const next = v.isController
       ? `<button class="btn primary" data-action="next-hand">${ruleta && shooters.length ? s.continueBtn : s.nextHand}</button>`
       : waiting;
     return `<div class="overlay ${enter}"><div class="card ${humanWon ? 'win' : r.winnerPlayer === null ? '' : 'lose'}">
       <h2>${headline}</h2><p>${who}</p>
-      ${!ruleta && r.winnerTeam !== null ? `<p class="points team-${r.winnerTeam}">+${r.points} ${s.points}</p>` : ''}
-      <h3>${s.pipsLeft}</h3><ul class="counts">${counts}</ul>
+      <h3>${s.pipsLeft}</h3>
+      <ul class="results ${ruleta ? 'with-totals' : ''}">
+        ${totals ? `<li class="res-head"><span></span><span></span><span>${s.handPts}</span><span>${s.matchTotal}</span></li>` : ''}
+        ${rows}</ul>
+      ${summary}
       ${ruleta
         ? `<p class="must-shoot">${shooters.length ? `${s.mustShoot} <b>${shooters.map((p) => this.nameOf(p)).join(', ')}</b>` : s.nobodyShoots}</p>`
         : `<p class="final"><span class="team-0">${s.us} ${m.scores[0]}</span> — <span class="team-1">${s.them} ${m.scores[1]}</span></p>`}
