@@ -15,7 +15,11 @@ export type NetMessage =
   | { t: 'chat'; text: string }
   | { t: 'chatLine'; seat: number; name: string; text: string };
 
-export const PROTOCOL_VERSION = 2;
+/**
+ * Bump only for changes old pages can't live with: a mismatch locks players out of each other's
+ * tables. New message types (like chat) are fine without a bump, since older pages ignore them.
+ */
+export const PROTOCOL_VERSION = 1;
 
 export interface Transport {
   readonly selfId: string;
@@ -202,9 +206,29 @@ class PeerTransport implements Transport {
   private messageCbs: ((from: string, msg: NetMessage) => void)[] = [];
   private leftCbs: ((peer: string) => void)[] = [];
 
+  private closed = false;
+
   constructor(private readonly peer: PeerInstance, readonly selfId: string, readonly hostId: string) {
     peer.on('connection', (conn) => this.adopt(conn));
+    // The broker forgets a peer whose tab went to sleep (switching to WhatsApp to send the code is
+    // enough on a heavy page). Register again, under the same id, so the table code keeps working.
+    peer.on('disconnected', () => this.reconnect());
+    document.addEventListener('visibilitychange', this.onVisible);
   }
+
+  private reconnect(): void {
+    if (this.closed || this.peer.destroyed || !this.peer.disconnected) return;
+    try {
+      this.peer.reconnect();
+    } catch {
+      /* broker still unreachable */
+    }
+    setTimeout(() => this.reconnect(), 3000);
+  }
+
+  private readonly onVisible = (): void => {
+    if (!document.hidden) this.reconnect();
+  };
 
   adopt(conn: DataConnection): void {
     const ready = () => this.conns.set(conn.peer, conn);
@@ -237,6 +261,8 @@ class PeerTransport implements Transport {
   }
 
   close(): void {
+    this.closed = true;
+    document.removeEventListener('visibilitychange', this.onVisible);
     for (const conn of this.conns.values()) conn.close();
     this.peer.destroy();
   }
@@ -256,9 +282,19 @@ async function iceServers(): Promise<RTCIceServer[] | null> {
   }
 }
 
+/** Tests can point PeerJS at a local broker ("localhost:9000") instead of the public one. */
+function brokerOverride(): { host: string; port: number; path: string; secure: boolean } | null {
+  try {
+    const [host, port] = (localStorage.getItem('capicu.peerServer') ?? '').split(':');
+    return host && port ? { host, port: Number(port), path: '/', secure: false } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function newPeer(id?: string): Promise<PeerInstance> {
   const [{ Peer }, ice] = await Promise.all([loadPeer(), iceServers()]);
-  const options = { debug: 0 as const, ...(ice ? { config: { iceServers: ice } } : {}) };
+  const options = { debug: 0 as const, ...brokerOverride(), ...(ice ? { config: { iceServers: ice } } : {}) };
   return id ? new Peer(id, options) : new Peer(options);
 }
 

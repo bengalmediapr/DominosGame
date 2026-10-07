@@ -122,7 +122,7 @@ describe('joining a table that does not answer', () => {
     vi.advanceTimersByTime(GUEST_TIMEOUT_MS - 100);
     expect(lost.ended).toBeNull();
     vi.advanceTimersByTime(200);
-    expect(lost.ended).toBe('notFound');
+    expect(lost.ended).toBe('noAnswer');
   });
 
   it('keeps names unique at the table', () => {

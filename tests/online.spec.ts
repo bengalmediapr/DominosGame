@@ -130,10 +130,12 @@ test('chat at the table, and the host moves people between chairs', async ({ bro
   await expect.poll(async () => (await state(guest)).lobby?.me).toBe(1);
   await host.locator('[data-action=start]').click();
   await expect.poll(async () => (await state(guest)).screen).toBe('game');
+  await expect.poll(async () => (await state(guest)).screen, { timeout: 45_000 }).toBe('game');
   await guest.keyboard.press('t');
   await guest.keyboard.type('buena suerte');
   await guest.keyboard.press('Enter');
-  await expect.poll(async () => ((await state(host)) as unknown as { chat: string[] }).chat.at(-1)).toContain('buena suerte');
+  // Both tabs render the 3D table on the CPU here; the guest's can stall for a while after the deal.
+  await expect.poll(async () => ((await state(host)) as unknown as { chat: string[] }).chat.at(-1), { timeout: 45_000 }).toContain('buena suerte');
   await expect(host.locator('.tag[data-seat="1"] .bubble')).toContainText('buena suerte'); // over the speaker's head
   expect(errors).toEqual([]);
   await context.close();

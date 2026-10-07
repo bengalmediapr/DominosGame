@@ -260,7 +260,7 @@ export class App {
     const s = t();
     if (this.session instanceof GuestSession && this.session.ended) {
       const reason = this.session.ended;
-      this.notice = reason === 'full' ? s.tableFull : reason === 'notFound' ? s.tableNotFound : s.hostLeft;
+      this.notice = reason === 'full' ? s.tableFull : reason === 'noAnswer' ? s.tableNoAnswer : s.hostLeft;
       this.leaveSession(false);
       this.screen = 'online';
       this.scene.setMode('menu');
@@ -725,6 +725,7 @@ export class App {
     return `<main class="screen panel lobby">
       <h2>${s.lobbyTitle}</h2>
       ${lobby.code ? `<p class="code">${s.codeLabel}: <b>${lobby.code}</b></p>` : ''}
+      ${lobby.code && lobby.isHost ? `<p class="note">${s.keepOpen}</p>` : ''}
       <ul class="seats">${seats}</ul>
       ${lobby.isHost ? `<p class="note">${s.seatHelp}</p>` : ''}
       ${modes}

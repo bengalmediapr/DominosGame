@@ -298,8 +298,8 @@ export class GuestSession extends Session {
   private host: string;
   private lobbyState: { seats: SeatInfo[]; mode: Mode } | null = null;
   private offs: (() => void)[] = [];
-  /** Set when the host closes the table, the table is full, or no table answers the code. */
-  ended: 'full' | 'hostLeft' | 'notFound' | null = null;
+  /** Set when the host closes the table, the table is full, or the table doesn't answer. */
+  ended: 'full' | 'hostLeft' | 'noAnswer' | null = null;
 
   constructor(private readonly transport: Transport, name: string) {
     super();
@@ -317,7 +317,7 @@ export class GuestSession extends Session {
     }, 1000);
     // Nobody answered: wrong code, or the table is somewhere this transport can't reach.
     const giveUp = setTimeout(() => {
-      if (!this.lobbyState && !this.snap && !this.ended) this.end('notFound');
+      if (!this.lobbyState && !this.snap && !this.ended) this.end('noAnswer');
     }, GUEST_TIMEOUT_MS);
     this.offs.push(() => clearInterval(retry), () => clearTimeout(giveUp));
   }
@@ -342,7 +342,7 @@ export class GuestSession extends Session {
     }
   }
 
-  private end(reason: 'full' | 'hostLeft' | 'notFound'): void {
+  private end(reason: 'full' | 'hostLeft' | 'noAnswer'): void {
     this.ended = reason;
     this.publish(null, []);
   }
