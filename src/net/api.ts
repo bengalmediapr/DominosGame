@@ -1,11 +1,11 @@
 /** Where the game's server routes live (server/api.ts). The desktop app has none of its own: it uses the web version's. */
 /**
  * Our online relay (relay/, a Cloudflare Worker). Every player keeps a WebSocket to it and it passes
- * the game's messages along, which works on any network (phones included). Empty: not deployed yet,
+ * the game's messages along, which works on any network (phones included). Empty would mean no relay,
  * so online play falls back to direct browser-to-browser connections. Tests can point it elsewhere
  * with localStorage "capicu.relay".
  */
-const DEFAULT_RELAY = '';
+const DEFAULT_RELAY = 'wss://capicu-relay.bengalmediapr.workers.dev';
 
 export function relayUrl(): string {
   try {

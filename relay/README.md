@@ -13,7 +13,7 @@ Cloudflare dashboard → **Workers & Pages → Create → Workers → Import a r
 
 Each push to `main` that touches `relay/` redeploys it (Workers Builds, root directory `relay`).
 
-The game finds it through `DEFAULT_RELAY` in `src/net/api.ts` (its `wss://…workers.dev` address).
+The game finds it through `DEFAULT_RELAY` in `src/net/api.ts`: `wss://capicu-relay.bengalmediapr.workers.dev`.
 
 ## Try it locally
 
