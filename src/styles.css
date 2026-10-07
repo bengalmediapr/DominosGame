@@ -17,8 +17,9 @@
   --team-0: #5cc0f5;
   --team-1: #ff4f6a;
   --gold: #ffc93c;
-  --display: 'Lilita One', 'Trebuchet MS', system-ui, sans-serif;
-  --body: 'Nunito', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* Square, heavy display type to match the logo; a clean modern sans for everything else. */
+  --display: 'Russo One', 'Arial Black', system-ui, sans-serif;
+  --body: 'Barlow', system-ui, -apple-system, 'Segoe UI', sans-serif;
   color-scheme: dark;
 }
 
@@ -573,3 +574,19 @@ html, body { overscroll-behavior: none; touch-action: manipulation; -webkit-tap-
 .press-start { background: rgba(10, 4, 20, 0.7); padding: 0.45rem 1.4rem; border-radius: 999px; }
 /* The top bar stays above the players' name tags. */
 .hud { z-index: 4; }
+
+/* ---------- logo and modern type ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.logo img { display: block; width: 100%; height: auto; filter: drop-shadow(0 6px 22px rgba(0, 0, 0, 0.55)); }
+.logo.big { width: min(720px, 84vw); }
+.home-panel .logo { width: min(300px, 70vw); }
+.title .tagline { font-size: 1.15rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.85; }
+.btn { font-size: 1.1rem; letter-spacing: 0.03em; }
+.mode-title { font-size: 1.2rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.mode-desc { font-size: 0.95rem; font-weight: 500; }
+.panel h2, .card h2 { font-size: 1.9rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.char-card b { font-size: 1.45rem; letter-spacing: 0.03em; }
+.press-start { font-size: 1.05rem; letter-spacing: 0.12em; text-transform: uppercase; }
+body { font-weight: 500; }
+/* A name tag shows once it knows where its player's head is. */
+.tag:not(.placed) { visibility: hidden; }

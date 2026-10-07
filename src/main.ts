@@ -1,6 +1,7 @@
-import '@fontsource/lilita-one/400.css';
-import '@fontsource/nunito/600.css';
-import '@fontsource/nunito/800.css';
+import '@fontsource/russo-one/400.css';
+import '@fontsource/barlow/500.css';
+import '@fontsource/barlow/600.css';
+import '@fontsource/barlow/700.css';
 import './styles.css';
 import { App } from './ui/app';
 

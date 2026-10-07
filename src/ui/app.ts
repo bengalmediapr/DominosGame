@@ -834,6 +834,8 @@ export class App {
     const top = (hud ? hud.offsetTop + hud.offsetHeight : 60) + 8;
     this.ui.querySelectorAll<HTMLElement>('.tag[data-seat]').forEach((el) => {
       const pos = this.scene.headScreenPos(Number(el.dataset.seat));
+      // Not placed yet (the character is still loading): keep it hidden, not parked in the corner.
+      el.classList.toggle('placed', !!pos);
       if (!pos) return;
       // Players beyond the edge of a narrow (phone) screen keep their tag on screen, at the edge.
       const half = el.offsetWidth / 2 + 6;
@@ -867,11 +869,15 @@ export class App {
     return s.parejasDesc.replace('{partner}', partner).replace('{a}', right).replace('{b}', left);
   }
 
+  /** The Capicú logo (public/logo.png), with its name for screen readers. */
+  private logo(size: 'big' | ''): string {
+    return `<h1 class="logo ${size}"><img src="./logo.png" alt="" draggable="false"><span class="sr-only">${t().title}</span></h1>`;
+  }
+
   private titleView(): string {
     const s = t();
     return `<main class="screen title" data-action="start-game">
-      ${this.flag()}
-      <h1 class="logo big">${s.title}</h1>
+      ${this.logo('big')}
       <p class="tagline">${s.tagline}</p>
       <p class="press-start">${TOUCH ? s.tapToStart : s.pressToStart}</p>
     </main>`;
@@ -895,7 +901,7 @@ export class App {
         </div>
       </header>
       <div class="home-panel">
-        <h1 class="logo">${s.title}</h1>
+        ${this.logo('')}
         <section class="char-pick" aria-label="${s.yourCharacter}">
           <span class="char-label">${s.yourCharacter}</span>
           <div class="char-row">
