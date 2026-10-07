@@ -38,6 +38,15 @@ const HUMAN = 0;
 const GAME_CAMERA = { pos: new THREE.Vector3(0, 24, 34), look: new THREE.Vector3(0, -2, -1) };
 const glowMat = new THREE.MeshBasicMaterial({ color: '#ffc93c', transparent: true, opacity: 0.55 });
 const glowGeo = new THREE.BoxGeometry(1.25, TILE_T * 0.6, 2.25);
+/** How far a tile in your hand rises under the pointer. */
+const HOVER_LIFT = 0.6;
+/**
+ * Where a tile in your hand can be clicked: a box that doesn't move, covering the tilted tile both
+ * resting and lifted. Picking the tile itself flickers at its edge (lift it, it leaves the pointer,
+ * it drops back under the pointer, it lifts again...).
+ */
+const handHitGeo = new THREE.BoxGeometry(1.4, 2.7, 1.4);
+const hiddenMat = new THREE.MeshBasicMaterial({ visible: false });
 const ringMat = new THREE.MeshBasicMaterial({ color: '#ffc93c', transparent: true, opacity: 0.8, side: THREE.DoubleSide });
 
 export class TableScene {
@@ -456,10 +465,13 @@ export class TableScene {
           tile.position.y -= 0.35;
           tile.rotation.x = 1.15;
         }
-        tile.userData.pick = { kind: 'tile', tile: t } satisfies Pick;
         tile.userData.baseY = tile.position.y;
-        holder.add(tile);
-        this.pickables.push(tile);
+        const hit = new THREE.Mesh(handHitGeo, hiddenMat);
+        hit.position.y = tile.position.y + HOVER_LIFT / 2;
+        hit.userData.pick = { kind: 'tile', tile: t } satisfies Pick;
+        hit.userData.lifts = tile;
+        holder.add(tile, hit);
+        this.pickables.push(hit);
       } else {
         // Other players' tiles arrive hidden ([-1, -1]); only their backs are visible anyway.
         const tile = t[0] < 0 ? makeTile(0, 0) : makeTile(t[0], t[1]);
@@ -563,10 +575,10 @@ export class TableScene {
 
     // Hover: lift the tile under the cursor.
     const hit = this.pick();
-    const hovered = hit?.userData.pick?.kind === 'tile' ? hit : null;
+    const hovered: THREE.Object3D | null = hit?.userData.pick?.kind === 'tile' ? hit.userData.lifts : null;
     if (hovered !== this.hovered) {
       if (this.hovered) this.hovered.position.y = this.hovered.userData.baseY;
-      if (hovered) hovered.position.y = hovered.userData.baseY + 0.6;
+      if (hovered) hovered.position.y = hovered.userData.baseY + HOVER_LIFT;
       this.hovered = hovered;
     }
     this.canvas.style.cursor = hit ? 'pointer' : 'default';
