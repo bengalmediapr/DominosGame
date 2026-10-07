@@ -99,7 +99,7 @@ class TabTransport implements Transport {
   private leftCbs: ((peer: string) => void)[] = [];
 
   constructor(readonly code: string, readonly selfId: string, readonly hostId: string) {
-    this.channel = new BroadcastChannel(`domino-boricua:${code}`);
+    this.channel = new BroadcastChannel(`capicu:${code}`);
     this.channel.onmessage = (e: MessageEvent<Envelope>) => {
       const { from, to, msg } = e.data;
       if (to !== this.selfId && to !== '*') return;
@@ -157,4 +157,127 @@ export function hostInTabs(): Transport & { code: string } {
 export function joinInTabs(code: string): Transport {
   // The host's id isn't known yet: tab hosts answer to the conventional prefix via '*'.
   return new TabTransport(code.toUpperCase(), `guest-${randomId()}`, '*');
+}
+
+// ---------- Internet, browser to browser (WebRTC via PeerJS) ----------
+
+/**
+ * Lets the web build play across the internet without a server of our own: PeerJS's free public
+ * broker only introduces the browsers (table code -> peer id); game messages then flow directly
+ * between them over WebRTC, falling back to PeerJS's TURN relays when a direct path is blocked.
+ */
+const PEER_PREFIX = 'capicu-table-';
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I
+
+function tableCode(): string {
+  return Array.from({ length: 5 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join('');
+}
+
+type PeerLib = typeof import('peerjs');
+type PeerInstance = import('peerjs').Peer;
+type DataConnection = import('peerjs').DataConnection;
+
+export class NetError extends Error {
+  constructor(readonly reason: 'unreachable' | 'notFound') {
+    super(reason);
+  }
+}
+
+class PeerTransport implements Transport {
+  private readonly conns = new Map<string, DataConnection>();
+  private messageCbs: ((from: string, msg: NetMessage) => void)[] = [];
+  private leftCbs: ((peer: string) => void)[] = [];
+
+  constructor(private readonly peer: PeerInstance, readonly selfId: string, readonly hostId: string) {
+    peer.on('connection', (conn) => this.adopt(conn));
+  }
+
+  adopt(conn: DataConnection): void {
+    const ready = () => this.conns.set(conn.peer, conn);
+    if (conn.open) ready();
+    else conn.on('open', ready);
+    conn.on('data', (data) => {
+      for (const cb of this.messageCbs) cb(conn.peer, data as NetMessage);
+    });
+    const gone = () => {
+      if (this.conns.get(conn.peer) !== conn) return;
+      this.conns.delete(conn.peer);
+      for (const cb of this.leftCbs) cb(conn.peer);
+    };
+    conn.on('close', gone);
+    conn.on('error', gone);
+  }
+
+  send(to: string, msg: NetMessage): void {
+    this.conns.get(to)?.send(msg);
+  }
+
+  onMessage(cb: (from: string, msg: NetMessage) => void): () => void {
+    this.messageCbs.push(cb);
+    return () => { this.messageCbs = this.messageCbs.filter((c) => c !== cb); };
+  }
+
+  onPeerLeft(cb: (peer: string) => void): () => void {
+    this.leftCbs.push(cb);
+    return () => { this.leftCbs = this.leftCbs.filter((c) => c !== cb); };
+  }
+
+  close(): void {
+    for (const conn of this.conns.values()) conn.close();
+    this.peer.destroy();
+  }
+}
+
+const loadPeer = (): Promise<PeerLib> => import('peerjs');
+
+/** Resolves once the broker has registered us, or fails after `ms`. */
+function opened(peer: PeerInstance, ms: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new NetError('unreachable')), ms);
+    peer.once('open', (id) => { clearTimeout(timer); resolve(id); });
+    peer.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err.type === 'unavailable-id' ? err : new NetError('unreachable'));
+    });
+  });
+}
+
+export async function hostOnInternet(): Promise<Transport & { code: string }> {
+  const { Peer } = await loadPeer();
+  // A code already in use on the broker is rare; just pick another.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const code = tableCode();
+    const peer = new Peer(PEER_PREFIX + code, { debug: 0 });
+    try {
+      const id = await opened(peer, 12_000);
+      return Object.assign(new PeerTransport(peer, id, id), { code });
+    } catch (err) {
+      peer.destroy();
+      if (!(err instanceof Error && 'type' in err && err.type === 'unavailable-id')) throw err;
+    }
+  }
+  throw new NetError('unreachable');
+}
+
+export async function joinOnInternet(code: string): Promise<Transport> {
+  const { Peer } = await loadPeer();
+  const peer = new Peer({ debug: 0 });
+  const selfId = await opened(peer, 12_000).catch((err) => {
+    peer.destroy();
+    throw err;
+  });
+  const hostId = PEER_PREFIX + code.trim().toUpperCase();
+  const transport = new PeerTransport(peer, selfId, hostId);
+  const conn = peer.connect(hostId, { reliable: true, serialization: 'json' });
+  transport.adopt(conn);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { transport.close(); reject(new NetError('notFound')); }, 15_000);
+    conn.once('open', () => { clearTimeout(timer); resolve(transport); });
+    peer.on('error', (err) => {
+      if (err.type !== 'peer-unavailable') return;
+      clearTimeout(timer);
+      transport.close();
+      reject(new NetError('notFound'));
+    });
+  });
 }

@@ -16,8 +16,8 @@ export const DEFAULT_SETTINGS: Settings = {
   countAllHands: true, volume: 0.7, speed: 'normal',
 };
 
-const KEY = 'domino-boricua.settings.v1';
-const SAVE_KEY = 'domino-boricua.match.v1';
+const KEY = 'capicu.settings.v1';
+const SAVE_KEY = 'capicu.match.v1';
 
 function read<T>(key: string): T | null {
   try {

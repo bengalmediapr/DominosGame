@@ -1,6 +1,6 @@
 {
-  "name": "domino-boricua",
-  "productName": "Dominó Boricua",
+  "name": "capicu",
+  "productName": "Capicú",
   "version": "0.1.0",
   "description": "Puerto Rican style dominoes (2 vs 2, double-six, to 500) for PC.",
   "author": "Bengal Media PR",
@@ -20,8 +20,8 @@
     "models": "node scripts/prepare-models.mjs"
   },
   "build": {
-    "appId": "pr.bengalmedia.dominoboricua",
-    "productName": "Dominó Boricua",
+    "appId": "pr.bengalmedia.capicu",
+    "productName": "Capicú",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -74,6 +74,7 @@
   "dependencies": {
     "@fontsource/lilita-one": "^5.3.0",
     "@fontsource/nunito": "^5.3.0",
+    "peerjs": "^1.5.5",
     "three": "^0.186.1"
   }
 }

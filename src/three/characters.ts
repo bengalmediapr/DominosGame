@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { star } from '../ui/tileSvg';
+import { loadGlb } from './assets';
 
 /**
  * Seated characters built on KayKit's CC0 "Adventurers" rig (www.kaylousberg.com), stripped of their
@@ -184,24 +184,7 @@ function recolorAtlas(material: THREE.MeshStandardMaterial, atlas: THREE.Texture
   material.needsUpdate = true;
 }
 
-const loader = new GLTFLoader();
-type Gltf = { scene: THREE.Group; animations: THREE.AnimationClip[] };
-const cache = new Map<string, Promise<Gltf>>();
-
-/** Single-file builds (e.g. the web demo) can embed models as base64 instead of shipping .glb files. */
-function loadGlb(file: string): Promise<Gltf> {
-  const embedded = (globalThis as { __DOMINO_MODELS?: Record<string, string> }).__DOMINO_MODELS?.[file];
-  if (embedded) {
-    const bytes = Uint8Array.from(atob(embedded), (c) => c.charCodeAt(0));
-    return loader.parseAsync(bytes.buffer, './models/') as Promise<Gltf>;
-  }
-  return loader.loadAsync(`./models/${file}.glb`) as Promise<Gltf>;
-}
-
-const loadModel = (file: string) => {
-  if (!cache.has(file)) cache.set(file, loadGlb(file));
-  return cache.get(file)!;
-};
+const loadModel = (file: string) => loadGlb(file);
 
 /** Height of the seated model in its own units, used to scale it to the table. */
 const SEATED_HEIGHT = 2.5;
