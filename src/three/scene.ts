@@ -35,6 +35,8 @@ const easeOutBack: Ease = (t) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2;
 interface Tween { elapsed: number; duration: number; update(t: number): void; done(): void }
 
 const HUMAN = 0;
+/** The revolver model is about 9 units long; this makes it ~3 domino tiles long on the table. */
+const GUN_SCALE = 0.6;
 const GAME_CAMERA = { pos: new THREE.Vector3(0, 24, 34), look: new THREE.Vector3(0, -2, -1) };
 const glowMat = new THREE.MeshBasicMaterial({ color: '#ffc93c', transparent: true, opacity: 0.55 });
 const glowGeo = new THREE.BoxGeometry(1.25, TILE_T * 0.6, 2.25);
@@ -137,7 +139,9 @@ export class TableScene {
       seat.add(hand);
       this.hands.push(hand);
       const gun = makeRevolver();
-      gun.group.position.set(10.5, 0.5, TABLE_HALF - 7);
+      // Beside each player's tiles, lying on the table near their edge.
+      gun.group.scale.setScalar(GUN_SCALE);
+      gun.group.position.set(10.2, 0.45, TABLE_HALF - 5);
       gun.group.rotation.set(Math.PI / 2, Math.PI / 2 + 0.4, 0, 'YXZ');
       seat.add(gun.group);
       gun.group.updateMatrix();
@@ -283,7 +287,7 @@ export class TableScene {
       this.seats[seat].attach(gun.group);
       this.applyDeath(seat, true);
       const dropFrom = gun.group.position.clone();
-      const dropTo = new THREE.Vector3(9, 0.5, TABLE_HALF - 4);
+      const dropTo = new THREE.Vector3(9.5, 0.45, TABLE_HALF - 4.5);
       const qFrom = gun.group.quaternion.clone();
       const restQ = new THREE.Quaternion();
       this.revolvers[seat].rest.decompose(new THREE.Vector3(), restQ, new THREE.Vector3());
@@ -323,7 +327,7 @@ export class TableScene {
     const yAxis = up.sub(barrel.clone().multiplyScalar(up.dot(barrel))).normalize();
     const toQ = new THREE.Quaternion().setFromRotationMatrix(
       new THREE.Matrix4().makeBasis(barrel, yAxis, new THREE.Vector3().crossVectors(barrel, yAxis)));
-    const toS = new THREE.Vector3(0.06, 0.06, 0.06);
+    const toS = new THREE.Vector3(0.045, 0.045, 0.045);
     this.faceLight.intensity = 2.5;
     await this.tween(900, (t) => {
       gun.position.lerpVectors(from.p, toP, t);
