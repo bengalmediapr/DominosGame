@@ -215,11 +215,13 @@ const ICE_TTL_S = 6 * 3600;
 /** Short-lived TURN credentials from Cloudflare Realtime. */
 async function iceServers(env: Env): Promise<Response> {
   if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return fail(503, 'noRelay');
-  const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, {
+  const request = (path: string) => fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/${path}`, {
     method: 'POST',
     headers: { authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ ttl: ICE_TTL_S }),
   });
+  let res = await request('generate-ice-servers');
+  if (res.status === 404) res = await request('generate'); // the older endpoint, same credentials
   if (!res.ok) return fail(502, 'relayUnavailable');
   const data = await res.json() as { iceServers?: IceServer | IceServer[] };
   const list = ([] as IceServer[]).concat(data.iceServers ?? []);
