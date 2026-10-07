@@ -1,0 +1,13 @@
+# Capicú online relay: every player keeps one WebSocket to the table's room, and the room passes
+# messages between the host and the guests. Deployed by .github/workflows/deploy-relay.yml.
+name = "capicu-relay"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]

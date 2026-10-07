@@ -1,5 +1,5 @@
 import type { Mode } from '../engine/game';
-import { API_BASE } from './api';
+import { API_BASE, relayUrl } from './api';
 import type { Intent, SeatInfo, Snapshot, TableEvent } from './table';
 
 /** Everything that travels between players. The host is the only one who runs the rules. */
@@ -31,6 +31,8 @@ export interface Transport {
   onPeerLeft(cb: (peer: string) => void): () => void;
   /** Open the platform's invite dialog, if it has one. */
   invite?(): void;
+  /** Called after the connection came back from a drop (to catch up on what was missed). */
+  onReconnected?(cb: () => void): () => void;
   close(): void;
 }
 
@@ -361,9 +363,167 @@ function opened(peer: PeerInstance, ms: number): Promise<string> {
   });
 }
 
+// ---------- Internet through our relay (relay/, WebSockets to a Cloudflare Worker) ----------
+
+type RelayFrame = { from: string; msg: NetMessage } | { sys: 'left'; id: string } | { sys: 'notFound' | 'taken' };
+
+/** How often each side says it's still there, so idle connections aren't cut by the network. */
+const RELAY_PING_MS = 25_000;
+/** Give up reconnecting after this long without the relay. */
+const RELAY_RETRY_MS = 60_000;
+
+class RelayTransport implements Transport {
+  private ws: WebSocket | null = null;
+  private closed = false;
+  private outbox: string[] = [];
+  private messageCbs: ((from: string, msg: NetMessage) => void)[] = [];
+  private leftCbs: ((peer: string) => void)[] = [];
+  private lostSince: number | null = null;
+  private ping: ReturnType<typeof setInterval>;
+  private reconnectedCbs: (() => void)[] = [];
+  private everOpen = false;
+  /** Last peer heard from: for a guest, the host. */
+  private lastFrom = '*';
+
+  constructor(private readonly url: string, private readonly role: 'host' | 'guest', readonly selfId: string, readonly hostId: string) {
+    this.ping = setInterval(() => this.post({ to: '*', msg: { t: 'ping' } }), RELAY_PING_MS);
+    document.addEventListener('visibilitychange', this.onVisible);
+  }
+
+  /** Resolves once the room has us; rejects if the room turns us away. */
+  connect(timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) { this.close(); reject(err); } else resolve();
+      };
+      const timer = setTimeout(() => { netLog('relay: no answer'); settle(new NetError('unreachable')); }, timeoutMs);
+      this.open((frame) => {
+        if ('sys' in frame && frame.sys === 'notFound') settle(new NetError('notFound'));
+        if ('sys' in frame && frame.sys === 'taken') settle(new RelayTaken());
+      }, () => settle());
+    });
+  }
+
+  private open(onSys?: (frame: RelayFrame) => void, onOpen?: () => void): void {
+    const ws = new WebSocket(`${this.url}?role=${this.role}&id=${encodeURIComponent(this.selfId)}`);
+    this.ws = ws;
+    ws.onopen = () => {
+      netLog(`relay: connected as ${this.role}`);
+      this.lostSince = null;
+      // Rejections arrive right after opening; give them a moment before trusting the room.
+      setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        onOpen?.();
+        for (const line of this.outbox.splice(0)) ws.send(line);
+        if (this.everOpen) for (const cb of this.reconnectedCbs) cb();
+        this.everOpen = true;
+      }, 150);
+    };
+    ws.onmessage = (e) => {
+      let frame: RelayFrame;
+      try {
+        frame = JSON.parse(String(e.data)) as RelayFrame;
+      } catch {
+        return;
+      }
+      if ('sys' in frame) {
+        if (frame.sys === 'left') for (const cb of this.leftCbs) cb(frame.id);
+        else { netLog(`relay: ${frame.sys}`); onSys?.(frame); }
+        return;
+      }
+      if (frame.msg?.t === 'ping') return;
+      this.lastFrom = frame.from;
+      for (const cb of this.messageCbs) cb(frame.from, frame.msg);
+    };
+    ws.onclose = (e) => {
+      if (this.ws !== ws || this.closed) return;
+      if (e.code === 4004 || e.code === 4009) return; // turned away: connect() already said why
+      netLog(`relay: connection lost (${e.code}), reconnecting`);
+      this.lostSince ??= Date.now();
+      if (Date.now() - this.lostSince > RELAY_RETRY_MS) {
+        netLog('relay: gave up reconnecting');
+        this.close();
+        for (const cb of this.leftCbs) cb(this.role === 'guest' ? this.lastFrom : this.selfId);
+        return;
+      }
+      setTimeout(() => { if (!this.closed && this.ws === ws) this.open(); }, document.hidden ? 5000 : 1000);
+    };
+  }
+
+  private readonly onVisible = (): void => {
+    // A phone coming back from another app: reconnect right away instead of waiting.
+    if (!document.hidden && !this.closed && this.ws && this.ws.readyState > WebSocket.OPEN) this.open();
+  };
+
+  private post(frame: { to?: string; msg: NetMessage }): void {
+    const line = JSON.stringify(this.role === 'host' ? frame : { msg: frame.msg });
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(line);
+    else if (this.outbox.length < 200) this.outbox.push(line);
+  }
+
+  send(to: string, msg: NetMessage): void {
+    this.post({ to, msg });
+  }
+
+  onMessage(cb: (from: string, msg: NetMessage) => void): () => void {
+    this.messageCbs.push(cb);
+    return () => { this.messageCbs = this.messageCbs.filter((c) => c !== cb); };
+  }
+
+  onPeerLeft(cb: (peer: string) => void): () => void {
+    this.leftCbs.push(cb);
+    return () => { this.leftCbs = this.leftCbs.filter((c) => c !== cb); };
+  }
+
+  onReconnected(cb: () => void): () => void {
+    this.reconnectedCbs.push(cb);
+    return () => { this.reconnectedCbs = this.reconnectedCbs.filter((c) => c !== cb); };
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.ping);
+    document.removeEventListener('visibilitychange', this.onVisible);
+    this.ws?.close(1000, 'bye');
+  }
+}
+
+class RelayTaken extends Error {}
+
+const relayPeerId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 12)}`;
+
+async function hostOnRelay(base: string): Promise<Transport & { code: string }> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const code = tableCode();
+    const id = relayPeerId('host');
+    const transport = new RelayTransport(`${base}/room/${code}`, 'host', id, id);
+    try {
+      await transport.connect(15_000);
+      netLog(`table ${code} open on the relay`);
+      return Object.assign(transport, { code });
+    } catch (err) {
+      if (!(err instanceof RelayTaken)) throw err; // a code in use: pick another
+    }
+  }
+  throw new NetError('unreachable');
+}
+
+async function joinOnRelay(base: string, code: string): Promise<Transport> {
+  const transport = new RelayTransport(`${base}/room/${code}`, 'guest', relayPeerId('guest'), '*');
+  await transport.connect(15_000);
+  return transport;
+}
+
 export async function hostOnInternet(): Promise<Transport & { code: string }> {
   resetNetLog();
   netLog('creating a table');
+  const relay = relayUrl();
+  if (relay) return hostOnRelay(relay);
   // A code already in use on the broker is rare; just pick another.
   for (let attempt = 0; attempt < 4; attempt++) {
     const code = tableCode();
@@ -384,6 +544,8 @@ const JOIN_TIMEOUT_MS = 45_000;
 export async function joinOnInternet(code: string): Promise<Transport> {
   resetNetLog();
   netLog(`joining table ${code.trim().toUpperCase()}`);
+  const relay = relayUrl();
+  if (relay) return joinOnRelay(relay, code.trim().toUpperCase());
   const peer = await newPeer();
   const selfId = await opened(peer, 12_000).catch((err) => {
     peer.destroy();

@@ -10,3 +10,4 @@ tests/_*.spec.ts
 _pw.config.ts
 public/_lab/
 assets-src/house/house-raw.glb
+.wrangler/

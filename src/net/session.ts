@@ -311,6 +311,9 @@ export class GuestSession extends Session {
     }));
     const hello: NetMessage = { t: 'hello', name, version: PROTOCOL_VERSION };
     transport.send(this.host, hello);
+    // Back from a dropped connection: say hello again, and the host sends the table as it is now.
+    const offReconnect = transport.onReconnected?.(() => { netLog('back online: catching up'); transport.send(this.host, hello); });
+    if (offReconnect) this.offs.push(offReconnect);
     // In case the host wasn't listening yet, say hello again until it answers.
     const retry = setInterval(() => {
       if (this.lobbyState || this.ended) clearInterval(retry);
