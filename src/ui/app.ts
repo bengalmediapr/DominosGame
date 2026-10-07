@@ -69,6 +69,9 @@ export class App {
   private readonly chatLog: HTMLElement;
   private readonly chatInput: HTMLInputElement;
   private chatLines: { name: string; text: string; mine: boolean }[] = [];
+  /** Phones: the chat is a button until you open it; lines arriving meanwhile are counted. */
+  private chatOpen = false;
+  private chatUnread = 0;
   private offChat: (() => void) | null = null;
   private profile: Profile | null = savedProfile();
   private leaders: LeaderRow[] | 'error' | null = null;
@@ -88,8 +91,10 @@ export class App {
     setVolume(this.settings.volume);
     // The chat lives outside .ui, which is redrawn on every change: typing must survive redraws.
     root.innerHTML = `<canvas class="gl"></canvas><div class="ui"></div>
-      <aside class="chat" hidden><ul class="chat-log" aria-live="polite"></ul>
-        <form id="chat-form" class="chat-form"><input id="chat-input" maxlength="160" autocomplete="off"></form></aside>`;
+      <aside class="chat" hidden>
+        <button class="chat-toggle" type="button" data-action="chat-toggle" aria-label="Chat"><span class="chat-icon">💬</span><b class="chat-unread" hidden></b></button>
+        <div class="chat-panel"><ul class="chat-log" aria-live="polite"></ul>
+          <form id="chat-form" class="chat-form"><input id="chat-input" maxlength="160" autocomplete="off"></form></div></aside>`;
     this.ui = root.querySelector('.ui')!;
     this.chatBox = root.querySelector('.chat')!;
     this.chatLog = root.querySelector('.chat-log')!;
@@ -145,6 +150,8 @@ export class App {
     this.historyLength = 0;
     this.matchId = newMatchId();
     this.chatLines = [];
+    this.chatOpen = false;
+    this.chatUnread = 0;
     this.scene.resetMatch();
     this.unsubscribe = session.subscribe((events) => this.onEvents(events));
     this.offChat = session.onChat((line) => this.onChatLine(line));
@@ -396,16 +403,33 @@ export class App {
     const seat = toView(line.seat, me);
     const name = seat === ME ? t().you : line.name ? esc(line.name) : this.nameOf(seat);
     this.chatLines = [...this.chatLines, { name, text: esc(line.text), mine: seat === ME }].slice(-CHAT_LINES);
+    if (!this.chatOpen && seat !== ME) this.chatUnread++;
     if (this.screen === 'game') this.say(seat, esc(line.text), false, 4500);
     this.render();
+  }
+
+  private toggleChat(open: boolean): void {
+    this.chatOpen = open;
+    if (open) {
+      this.chatUnread = 0;
+      this.chatInput.focus();
+    } else {
+      this.chatInput.blur();
+    }
+    this.renderChat();
   }
 
   private renderChat(): void {
     const open = !!this.session?.canChat && (this.screen === 'lobby' || this.screen === 'game');
     this.chatBox.hidden = !open;
+    this.chatBox.classList.toggle('open', this.chatOpen);
+    const badge = this.chatBox.querySelector<HTMLElement>('.chat-unread')!;
+    badge.hidden = this.chatUnread === 0 || this.chatOpen;
+    badge.textContent = String(Math.min(this.chatUnread, 9));
+    this.chatBox.querySelector('.chat-icon')!.textContent = this.chatOpen ? '✕' : '💬';
     if (!open) return;
     const s = t();
-    this.chatInput.placeholder = `${s.chatPlaceholder} · ${s.chatHint}`;
+    this.chatInput.placeholder = TOUCH ? s.chatPlaceholderTouch : `${s.chatPlaceholder} · ${s.chatHint}`;
     this.chatLog.innerHTML = this.chatLines
       .map((l) => `<li class="${l.mine ? 'mine' : ''}"><b>${l.name}</b> ${l.text}</li>`).join('');
   }
@@ -520,6 +544,7 @@ export class App {
       case 'start': (this.session as HostSession).start(); break;
       case 'seat-swap': (this.session as HostSession).swapSeats(Number(el.dataset.a), Number(el.dataset.b)); break;
       case 'profile': this.openProfile(); break;
+      case 'chat-toggle': this.toggleChat(!this.chatOpen); break;
       case 'sign-out':
         signOut();
         this.profile = null;
@@ -595,7 +620,7 @@ export class App {
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
     if ((e.key === 't' || e.key === 'T' || e.key === '/') && !this.chatBox.hidden) {
       e.preventDefault();
-      this.chatInput.focus();
+      this.toggleChat(true);
       return;
     }
     if (this.screen !== 'game') {
