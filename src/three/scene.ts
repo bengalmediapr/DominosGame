@@ -3,9 +3,10 @@ import type { HandState, Side } from '../engine/game';
 import { Tile, sameTile } from '../engine/tiles';
 import { layoutBoard } from '../ui/layout';
 import {
-  FLOOR_Y, Room, SEAT_DIST, TABLE_HALF, TILE_T, makeRevolver, makeRoom, makeTable, makeTile,
+  FLOOR_Y, SEAT_DIST, TABLE_HALF, TILE_T, loadDominoModel, makeRevolver, makeTable, makeTile,
 } from './models';
 import { Avatar, SEAT_LOOKS, loadAvatar, loadChair } from './characters';
+import { Patio, makePatio } from './patio';
 
 export type LookName = (typeof SEAT_LOOKS)[number];
 
@@ -53,7 +54,9 @@ export class TableScene {
   private readonly revolvers: { group: THREE.Group; drum: THREE.Object3D; rest: THREE.Matrix4 }[] = [];
   private readonly hands: THREE.Group[] = [];
   private readonly board = new THREE.Group();
-  private readonly room: Room;
+  private readonly patio: Patio;
+  /** Last state drawn, so tiles can be rebuilt when the domino model finishes loading. */
+  private lastView: SceneView | null = null;
   private readonly lamp: THREE.SpotLight;
   private readonly flash: THREE.PointLight;
   private readonly faceLight: THREE.PointLight;
@@ -84,11 +87,12 @@ export class TableScene {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.1;
-    this.scene.background = new THREE.Color('#120a18');
-    this.scene.fog = new THREE.Fog('#120a18', 90, 190);
+    // Night in San Juan: deep blue haze that swallows the far edges of the yard.
+    this.scene.background = new THREE.Color('#05060f');
+    this.scene.fog = new THREE.Fog('#0b0d1f', 220, 900);
     this.scene.add(this.camera);
 
-    this.scene.add(new THREE.HemisphereLight('#9a7bd6', '#2a1408', 1.2));
+    this.scene.add(new THREE.HemisphereLight('#5a6aa8', '#1a120a', 0.9));
     // Warm bounce off the table onto the players' faces.
     const faces = new THREE.PointLight('#ffcf9a', 1.1, 0, 0);
     faces.position.set(0, 14, 0);
@@ -100,19 +104,18 @@ export class TableScene {
     this.lamp.shadow.mapSize.set(2048, 2048);
     this.lamp.shadow.bias = -0.0004;
     this.scene.add(this.lamp, this.lamp.target);
-    const neonLight = new THREE.PointLight('#ff3fa8', 1.3, 0, 0);
-    neonLight.position.set(0, 25, -60);
-    const fill = new THREE.PointLight('#3fb8ff', 0.5, 0, 0);
-    fill.position.set(-50, 30, 40);
     this.flash = new THREE.PointLight('#ffd27a', 0, 0, 0);
     // Lights your own revolver when you hold it up to your head.
     this.faceLight = new THREE.PointLight('#ffe2b0', 0, 4, 0);
     this.faceLight.position.set(0.2, 0.4, 0.3);
     this.camera.add(this.faceLight);
-    this.scene.add(neonLight, fill, this.flash);
+    this.scene.add(this.flash);
 
-    this.room = makeRoom();
-    this.scene.add(this.room.group, makeTable(), this.board);
+    this.patio = makePatio();
+    loadDominoModel()
+      .then(() => { if (this.lastView) this.sync(this.lastView); })
+      .catch((err) => console.error('Could not load the domino model', err));
+    this.scene.add(this.patio.group, makeTable(), this.board);
 
     for (let p = 0; p < 4; p++) {
       const seat = new THREE.Group();
@@ -208,6 +211,7 @@ export class TableScene {
   }
 
   sync(view: SceneView): void {
+    this.lastView = view;
     const { hand } = view;
     this.revolvers.forEach((r, p) => {
       if (!this.dead[p] && r.group.parent === this.seats[p]) r.group.visible = view.ruleta && view.alive[p];
@@ -517,7 +521,7 @@ export class TableScene {
 
     if (this.mode === 'menu') {
       const a = t * 0.08;
-      this.camera.position.set(Math.sin(a) * 58, 26 + Math.sin(t * 0.3) * 3, Math.cos(a) * 58);
+      this.camera.position.set(Math.sin(a) * 95, 42 + Math.sin(t * 0.3) * 4, Math.cos(a) * 95);
       this.camera.lookAt(0, 2, 0);
     } else {
       this.camera.position.copy(GAME_CAMERA.pos);
@@ -541,9 +545,8 @@ export class TableScene {
     }
 
     this.flash.intensity *= 0.82;
-    this.room.fan.rotation.y += dt * 2.2;
-    (this.room.neon.material as THREE.MeshBasicMaterial).opacity = Math.random() < 0.015 ? 0.55 : 1;
-    this.room.bulbs.forEach((b, i) => b.scale.setScalar(0.85 + 0.25 * Math.sin(t * 2 + i)));
+    this.patio.update(t);
+    this.patio.bulbs.forEach((b, i) => b.scale.setScalar(0.85 + 0.2 * Math.sin(t * 2 + i)));
     for (const c of this.characters) c?.update(dt);
     this.board.children.forEach((o) => {
       if (o.userData.pulse) o.scale.setScalar(1 + Math.sin(t * 6) * 0.12);
