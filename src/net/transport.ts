@@ -4,7 +4,7 @@ import type { Intent, SeatInfo, Snapshot, TableEvent } from './table';
 
 /** Everything that travels between players. The host is the only one who runs the rules. */
 export type NetMessage =
-  | { t: 'hello'; name: string; version: number }
+  | { t: 'hello'; name: string; version: number; look?: string }
   | { t: 'lobby'; seats: SeatInfo[]; mode: Mode; you: number }
   | { t: 'full' }
   | { t: 'snapshot'; snapshot: Snapshot; events: TableEvent[] }

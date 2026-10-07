@@ -92,14 +92,19 @@ export class LocalSession extends Session {
   readonly kind = 'local';
   private table: Table;
 
-  constructor(private readonly config: TableConfig, mode: Mode, saved?: MatchState, private readonly save?: (m: MatchState) => void) {
+  constructor(
+    private readonly config: TableConfig, mode: Mode, saved?: MatchState, private readonly save?: (m: MatchState) => void,
+    private readonly look: string | null = null,
+  ) {
     super();
     this.table = this.makeTable(mode, saved);
   }
 
   private makeTable(mode: Mode, saved?: MatchState): Table {
+    const seats = defaultSeats();
+    seats[0].look = this.look;
     const table = new Table({
-      rules: this.config.rules(mode), seats: defaultSeats(), difficulty: this.config.difficulty, rng: Math.random,
+      rules: this.config.rules(mode), seats, difficulty: this.config.difficulty, rng: Math.random,
       controller: 0, aiDelayMs: this.config.aiDelayMs, pullMs: PULL_MS, triggerTimeoutMs: null, autoContinueMs: null,
       match: saved,
     });
@@ -150,10 +155,10 @@ export class HostSession extends Session {
   private offs: (() => void)[] = [];
   private chatTimes = new Map<number, number[]>();
 
-  constructor(private readonly config: TableConfig, private readonly transport: Transport & { code?: string }, name: string) {
+  constructor(private readonly config: TableConfig, private readonly transport: Transport & { code?: string }, name: string, look: string | null = null) {
     super();
     this.seats = defaultSeats();
-    this.seats[0] = { kind: 'human', name, peer: transport.selfId };
+    this.seats[0] = { kind: 'human', name, peer: transport.selfId, look };
     this.offs.push(transport.onMessage((from, msg) => this.onMessage(from, msg)));
     this.offs.push(transport.onPeerLeft((peer) => this.onLeft(peer)));
   }
@@ -195,7 +200,7 @@ export class HostSession extends Session {
       if (seat < 0) {
         seat = this.table ? -1 : JOIN_ORDER.map((o) => (this.me + o) % 4).find((p) => this.seats[p].kind === 'ai') ?? -1;
         if (seat < 0) return this.transport.send(from, { t: 'full' });
-        this.seats[seat] = { kind: 'human', name: this.tableName(msg.name), peer: from };
+        this.seats[seat] = { kind: 'human', name: this.tableName(msg.name), peer: from, look: typeof msg.look === 'string' ? msg.look.slice(0, 20) : null };
       }
       this.broadcastLobby();
       if (this.table) this.sendSnapshot(seat, []);
@@ -302,14 +307,14 @@ export class GuestSession extends Session {
   /** Set when the host closes the table, the table is full, or the table doesn't answer. */
   ended: 'full' | 'hostLeft' | 'noAnswer' | null = null;
 
-  constructor(private readonly transport: Transport, name: string) {
+  constructor(private readonly transport: Transport, name: string, look: string | null = null) {
     super();
     this.host = transport.hostId;
     this.offs.push(transport.onMessage((from, msg) => this.onMessage(from, msg)));
     this.offs.push(transport.onPeerLeft((peer) => {
       if (peer === this.host) this.end('hostLeft');
     }));
-    const hello: NetMessage = { t: 'hello', name, version: PROTOCOL_VERSION };
+    const hello: NetMessage = { t: 'hello', name, version: PROTOCOL_VERSION, ...(look ? { look } : {}) };
     transport.send(this.host, hello);
     // Back from a dropped connection: say hello again, and the host sends the table as it is now.
     const offReconnect = transport.onReconnected?.(() => { netLog('back online: catching up'); transport.send(this.host, hello); });

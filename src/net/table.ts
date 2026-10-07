@@ -19,6 +19,8 @@ export interface SeatInfo {
   name: string | null;
   /** Network peer id for remote humans; 'local' for whoever runs the table. */
   peer: string | null;
+  /** The character a human chose to appear as (see ui/cast.ts). */
+  look?: string | null;
 }
 
 export type Phase =

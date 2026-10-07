@@ -18,6 +18,7 @@ async function player(browser: import('@playwright/test').Browser, env: Env): Pr
   await serve(context, env);
   const page = await context.newPage();
   await page.goto('/');
+  await page.locator('[data-action=start-game]').click(); // past the title screen
   return [context, page];
 }
 
@@ -83,6 +84,7 @@ test('a public table shows up in the list, and one click sits you down', async (
       localStorage.setItem('capicu.net', 'tabs'); // tab-to-tab: no internet broker here
     });
     await page.reload();
+    await page.locator('[data-action=start-game]').click();
     await page.locator('[data-action=online]').click();
     return page;
   };

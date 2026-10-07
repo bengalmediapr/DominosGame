@@ -14,6 +14,7 @@ async function setup(page: Page, errors: string[]) {
   await page.evaluate(() => localStorage.setItem('capicu.settings.v1', JSON.stringify({ speed: 'fast', volume: 0 })));
   await page.reload();
   await expect(page.locator('.logo')).toHaveText('Capicú');
+  await page.locator('[data-action=start-game]').click(); // past the title screen
 }
 
 /** Plays as the human using only the keyboard and the on-screen buttons. */

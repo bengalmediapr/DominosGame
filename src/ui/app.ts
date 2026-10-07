@@ -20,8 +20,9 @@ import { bang, clack, coqui, dryClick, fanfare, setVolume, spin } from './audio'
 import { setLang, t } from './i18n';
 import { Settings, loadSavedMatch, loadSettings, saveMatch, saveSettings } from './settings';
 import { star } from './tileSvg';
+import { Look, assignLooks, isLook } from './cast';
 
-type Screen = 'menu' | 'options' | 'howto' | 'online' | 'lobby' | 'game' | 'profile';
+type Screen = 'title' | 'menu' | 'options' | 'howto' | 'online' | 'lobby' | 'game' | 'profile';
 const ME = 0; // in every view you sit at seat 0
 const DELAYS = { slow: 1300, normal: 800, fast: 350 };
 
@@ -47,7 +48,11 @@ const TOUCH = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)
 
 export class App {
   private settings: Settings = loadSettings();
-  private screen: Screen = 'menu';
+  private screen: Screen = 'title';
+  /** Where "Back" goes from options and the like: the home screen, or the game in progress. */
+  private backTo: 'menu' | 'game' = 'menu';
+  /** The in-game menu (☰) is open. */
+  private paused = false;
   private session: Session | null = null;
   private unsubscribe: (() => void) | null = null;
   private selected: Tile | null = null;
@@ -176,7 +181,7 @@ export class App {
 
   private playOffline(mode: Mode, resume = false): void {
     const saved = resume ? this.savedMatch() ?? undefined : undefined;
-    this.use(new LocalSession(this.config(), saved?.rules.mode ?? mode, saved, saveMatch));
+    this.use(new LocalSession(this.config(), saved?.rules.mode ?? mode, saved, saveMatch, this.character));
     this.enterGame();
   }
 
@@ -235,7 +240,7 @@ export class App {
       const transport: Transport & { code?: string } = viaSteam && this.steam
         ? await hostOnSteam(this.steam)
         : tabsOnly() ? hostInTabs() : await hostOnInternet();
-      this.use(new HostSession(this.config(), transport, this.myName()));
+      this.use(new HostSession(this.config(), transport, this.myName(), this.character));
       this.setPublic(listed);
       this.notice = null;
       this.screen = 'lobby';
@@ -277,7 +282,7 @@ export class App {
   }
 
   private joinWith(transport: Transport): void {
-    this.use(new GuestSession(transport, this.myName()));
+    this.use(new GuestSession(transport, this.myName(), this.character));
     this.notice = null;
     this.screen = 'lobby';
     this.render();
@@ -299,8 +304,19 @@ export class App {
     const v = this.view();
     const info = v?.seats[viewSeat];
     if (info?.kind === 'human' && info.name) return esc(info.name);
-    const engineSeat = v ? toEngine(viewSeat, v.me) : viewSeat;
-    return s.lookNames[SEAT_LOOKS[engineSeat]];
+    return s.lookNames[this.looks()[viewSeat]];
+  }
+
+  private get character(): Look {
+    return isLook(this.settings.character) ? this.settings.character : 'nico';
+  }
+
+  /** The character in each chair of the table on screen, by view seat (you are seat 0). */
+  private looks(): Look[] {
+    const v = this.view();
+    if (!v) return assignLooks([this.character, null, null, null]);
+    const byEngine = assignLooks([0, 1, 2, 3].map((e) => v.seats[toView(e, v.me)]?.look ?? null));
+    return [0, 1, 2, 3].map((p) => byEngine[toEngine(p, v.me)]);
   }
 
   private onEvents(events: TableEvent[]): void {
@@ -527,8 +543,8 @@ export class App {
     switch (action) {
       case 'play': this.playOffline(value as Mode); break;
       case 'continue': this.playOffline('ruleta', true); break;
-      case 'options': this.screen = 'options'; this.render(); break;
-      case 'howto': this.screen = 'howto'; this.render(); break;
+      case 'options': this.openPanel('options'); break;
+      case 'howto': this.openPanel('howto'); break;
       case 'online': this.notice = null; this.screen = 'online'; this.render(); break;
       case 'host-steam': void this.hostOnline(true); break;
       case 'host-tabs': void this.hostOnline(false); break;
@@ -551,7 +567,13 @@ export class App {
         this.profileNotice = { text: t().signOutNote, ok: true };
         this.render();
         break;
-      case 'menu': this.goMenu(); break;
+      case 'menu': this.paused = false; this.goMenu(); break;
+      case 'start-game': this.screen = 'menu'; this.render(); break;
+      case 'char-prev': case 'char-next': this.pickCharacter(action === 'char-next' ? 1 : -1); break;
+      case 'pause': this.paused = !this.paused; this.render(); break;
+      case 'resume': this.paused = false; this.render(); break;
+      case 'back': this.goBack(); break;
+      case 'quit-game': this.quitGame(); break;
       case 'quit': platform.quit(); break;
       case 'fullscreen': platform.toggleFullscreen(); break;
       case 'side': this.chooseSide(value as Side); break;
@@ -603,6 +625,47 @@ export class App {
     if (code.length >= 4) void this.joinByCode(code);
   }
 
+  /** Options and the rules open over the home screen, or over the game from the in-game menu. */
+  private openPanel(screen: 'options' | 'howto'): void {
+    this.backTo = this.screen === 'game' ? 'game' : 'menu';
+    this.paused = false;
+    this.screen = screen;
+    this.render();
+  }
+
+  private goBack(): void {
+    if (this.backTo === 'game' && this.session) {
+      this.screen = 'game';
+      this.paused = true;
+      this.render();
+    } else {
+      this.backTo = 'menu';
+      this.goMenu();
+    }
+  }
+
+  /** "Quit": closes the desktop app; in the browser, back to the title screen. */
+  private quitGame(): void {
+    this.paused = false;
+    if (platform.isDesktop) {
+      platform.quit();
+      return;
+    }
+    this.leaveSession(false);
+    this.screen = 'title';
+    this.scene.setMode('menu');
+    this.render();
+  }
+
+  private pickCharacter(step: number): void {
+    const all = SEAT_LOOKS as readonly Look[];
+    const i = all.indexOf(this.character);
+    this.settings.character = all[(i + step + all.length) % all.length];
+    saveSettings(this.settings);
+    clack();
+    this.render();
+  }
+
   /** Leaving a local match keeps it saved; leaving an online table closes the connection. */
   private goMenu(): void {
     if (this.session && this.session.kind !== 'local') {
@@ -623,11 +686,21 @@ export class App {
       this.toggleChat(true);
       return;
     }
-    if (this.screen !== 'game') {
-      if (e.key === 'Escape' && this.screen !== 'menu') this.goMenu();
+    if (this.screen === 'title') {
+      if (!['Shift', 'Control', 'Alt', 'Meta', 'Tab'].includes(e.key)) { this.screen = 'menu'; this.render(); }
       return;
     }
-    if (e.key === 'Escape') { this.goMenu(); return; }
+    if (this.screen !== 'game') {
+      if (e.key === 'Escape' && this.screen !== 'menu') {
+        if (this.screen === 'options' || this.screen === 'howto' || this.screen === 'profile') this.goBack();
+        else this.goMenu();
+      } else if (this.screen === 'menu' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        this.pickCharacter(e.key === 'ArrowRight' ? 1 : -1);
+      }
+      return;
+    }
+    if (e.key === 'Escape') { this.paused = !this.paused; this.render(); return; }
+    if (this.paused) return;
     const v = this.view();
     if (!v) return;
     if (v.phase.name === 'roulette' && v.phase.awaitingTrigger && v.phase.shooter === ME && (e.key === 'Enter' || e.key === ' ')) {
@@ -698,7 +771,7 @@ export class App {
     const views: Record<Screen, () => string> = {
       menu: () => this.menuView(), options: () => this.optionsView(), howto: () => this.howToView(),
       online: () => this.onlineView(), lobby: () => this.lobbyView(), game: () => this.gameView(),
-      profile: () => this.profileView(),
+      profile: () => this.profileView(), title: () => this.titleView(),
     };
     // Redrawing replaces every element: keep what's being typed, and where.
     const typing = this.ui.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement
@@ -725,10 +798,17 @@ export class App {
       this.tablesTimer = null;
     }
     const v = this.view();
+    if (this.screen !== 'game' && this.screen !== 'options' && this.screen !== 'howto') {
+      // Menus: everyone at the table, and the camera on your character (or circling, on the title).
+      this.scene.setCast(assignLooks([this.character, null, null, null]));
+      const wide = window.innerWidth > 760;
+      this.scene.setMenuFocus(this.screen === 'menu' ? 0 : null, wide ? 11 : 0, wide ? 0 : 9);
+    }
     if (this.screen === 'game' && v) {
       const h = v.match.hand;
       const myTurn = v.phase.name === 'playing' && h.current === ME && !h.result;
-      this.scene.setCast([0, 1, 2, 3].map((p) => (p === ME ? null : SEAT_LOOKS[toEngine(p, v.me)])));
+      const looks = this.looks();
+      this.scene.setCast([0, 1, 2, 3].map((p) => (p === ME ? null : looks[p])));
       this.scene.sync({
         hand: h,
         alive: v.match.rules.mode === 'ruleta' ? v.match.alive : [true, true, true, true],
@@ -772,32 +852,61 @@ export class App {
       <button class="btn small" data-action="copy-log">${s.copyDetails}</button></details>`;
   }
 
+  /** "You and <partner> against <the other two>", with whoever sits there when you play as your character. */
+  private parejasDesc(): string {
+    const s = t();
+    const [, right, partner, left] = assignLooks([this.character, null, null, null]).map((l) => s.lookNames[l]);
+    return s.parejasDesc.replace('{partner}', partner).replace('{a}', right).replace('{b}', left);
+  }
+
+  private titleView(): string {
+    const s = t();
+    return `<main class="screen title" data-action="start-game">
+      ${this.flag()}
+      <h1 class="logo big">${s.title}</h1>
+      <p class="tagline">${s.tagline}</p>
+      <p class="press-start">${TOUCH ? s.tapToStart : s.pressToStart}</p>
+    </main>`;
+  }
+
+  /** Home: pick your character (shown at the table behind), then a mode. */
   private menuView(): string {
     const s = t();
     const canContinue = this.savedMatch() !== null;
+    const look = this.character;
     const who = this.profile
       ? `👤 ${esc(this.profile.name)} · <b>${this.profile.points}</b> ${s.pointsLabel.toLowerCase()}`
       : `👤 ${s.chooseName}`;
-    return `<main class="screen menu">
-      <button class="btn small name-chip" data-action="profile">${who}</button>
-      ${this.flag()}
-      <h1 class="logo">${s.title}</h1>
-      <p class="tagline">${s.tagline}</p>
-      <nav class="menu-buttons">
-        ${canContinue ? `<button class="btn" data-action="continue">${s.continue}</button>` : ''}
-        <button class="btn primary mode" data-action="play" data-value="ruleta">
-          <span class="mode-title">${s.ruleta}</span><span class="mode-desc">${s.ruletaDesc}</span></button>
-        <button class="btn mode" data-action="play" data-value="parejas">
-          <span class="mode-title">${s.parejas}</span><span class="mode-desc">${s.parejasDesc}</span></button>
-        <button class="btn mode online" data-action="online">
-          <span class="mode-title">${s.online}</span><span class="mode-desc">${s.onlineDesc}</span></button>
-        <div class="row">
-          <button class="btn small" data-action="howto">${s.howTo}</button>
-          <button class="btn small" data-action="options">${s.options}</button>
-          <button class="btn small" data-action="profile">🏆 ${s.leaderboard}</button>
-          ${platform.isDesktop ? `<button class="btn small ghost" data-action="quit">${s.quit}</button>` : ''}
+    return `<main class="screen menu home">
+      <header class="home-top">
+        <button class="btn small name-chip" data-action="profile">${who}</button>
+        <div class="home-icons">
+          <button class="btn small icon" data-action="profile" aria-label="${s.leaderboard}" title="${s.leaderboard}">🏆</button>
+          <button class="btn small icon" data-action="options" aria-label="${s.options}" title="${s.options}">⚙</button>
+          ${platform.isDesktop ? `<button class="btn small icon" data-action="quit-game" aria-label="${s.quitGame}" title="${s.quitGame}">⏻</button>` : ''}
         </div>
-      </nav>
+      </header>
+      <div class="home-panel">
+        <h1 class="logo">${s.title}</h1>
+        <section class="char-pick" aria-label="${s.yourCharacter}">
+          <span class="char-label">${s.yourCharacter}</span>
+          <div class="char-row">
+            <button class="btn small icon" data-action="char-prev" aria-label="◀">◀</button>
+            <div class="char-card"><b>${s.lookNames[look]}</b><span>${s.lookBios[look]}</span></div>
+            <button class="btn small icon" data-action="char-next" aria-label="▶">▶</button>
+          </div>
+        </section>
+        <nav class="menu-buttons">
+          ${canContinue ? `<button class="btn" data-action="continue">${s.continue}</button>` : ''}
+          <button class="btn primary mode" data-action="play" data-value="ruleta">
+            <span class="mode-title">${s.ruleta}</span><span class="mode-desc">${s.ruletaDesc}</span></button>
+          <button class="btn mode" data-action="play" data-value="parejas">
+            <span class="mode-title">${s.parejas}</span><span class="mode-desc">${this.parejasDesc()}</span></button>
+          <button class="btn mode online" data-action="online">
+            <span class="mode-title">${s.online}</span><span class="mode-desc">${s.onlineDesc}</span></button>
+          <button class="btn small ghost" data-action="howto">${s.howTo}</button>
+        </nav>
+      </div>
     </main>`;
   }
 
@@ -848,8 +957,9 @@ export class App {
         <button class="btn ghost" data-action="menu">${s.leaveTable}</button></main>`;
     }
     const { hostSeat } = lobby;
+    const lobbyLooks = assignLooks(lobby.seats.map((x) => (x.kind === 'human' ? x.look ?? null : null)));
     const seats = lobby.seats.map((seat, p) => {
-      const look = s.lookNames[SEAT_LOOKS[p]];
+      const look = s.lookNames[lobbyLooks[p]];
       const who = seat.kind === 'human' ? esc(seat.name ?? s.guest) : `${look} · ${s.seatAi}`;
       const tags = [p === lobby.me ? s.seatYou : '', p === hostSeat ? s.seatHost : ''].filter(Boolean).join(', ');
       const team = lobby.mode === 'parejas' ? `team-${teamOf(p)}` : '';
@@ -933,7 +1043,7 @@ export class App {
       <h3>🏆 ${s.leaderboard}</h3>
       ${rows}
       <p class="note">${s.pointsNote}</p>
-      <button class="btn" data-action="menu">${s.back}</button>
+      <button class="btn" data-action="back">${s.back}</button>
     </main>`;
   }
 
@@ -957,7 +1067,7 @@ export class App {
       ${this.optionRow(s.speed, 'speed', [['slow', s.slow], ['normal', s.normal], ['fast', s.fast]])}
       ${this.optionRow(s.sound, 'volume', [['0', s.off], ['0.4', '◐'], ['0.7', '●']])}
       <div class="option-row"><span class="option-label">${s.fullscreen}</span><div class="seg"><button class="seg-btn" data-action="fullscreen">F11</button></div></div>
-      <button class="btn" data-action="menu">${s.back}</button>
+      <button class="btn" data-action="back">${s.back}</button>
     </main>`;
   }
 
@@ -968,7 +1078,7 @@ export class App {
       <ol class="rules">${s.rulesText.map((r) => `<li>${r}</li>`).join('')}</ol>
       <p class="rules"><b>${s.ruleta}:</b> ${s.ruletaDesc} (${CHAMBERS} ${s.chambers.toLowerCase()}, 1 🔫)</p>
       <p class="note keys-hint">1–7 · ← → · Enter · Esc · F11</p>
-      <button class="btn" data-action="menu">${s.back}</button>
+      <button class="btn" data-action="back">${s.back}</button>
     </main>`;
   }
 
@@ -1027,7 +1137,7 @@ export class App {
     const status = this.statusText(v);
     return `<main class="screen game">
       <header class="hud">
-        <button class="btn small ghost" data-action="menu">☰ ${s.menu}</button>
+        <button class="btn small ghost" data-action="pause">☰ ${s.menu}</button>
         ${score}
         <div class="flag-mini">${this.flag()}</div>
       </header>
@@ -1045,7 +1155,22 @@ export class App {
       ${status ? `<div class="status">${status}</div>` : ''}
       ${trigger}
       ${this.overlayView(v)}
+      ${this.paused ? this.pauseView() : ''}
     </main>`;
+  }
+
+  private pauseView(): string {
+    const s = t();
+    const online = this.session?.kind !== 'local';
+    return `<div class="overlay pause"><div class="card pause-card">
+      <h2>${s.menu}</h2>
+      <button class="btn primary" data-action="resume">${s.resume}</button>
+      <button class="btn" data-action="options">${s.options}</button>
+      <button class="btn" data-action="howto">${s.howTo}</button>
+      <button class="btn" data-action="menu">${online ? s.leaveTable : s.backToMain}</button>
+      <button class="btn ghost" data-action="quit-game">${s.quitGame}</button>
+      ${online ? '' : `<p class="note">${s.savedNote}</p>`}
+    </div></div>`;
   }
 
   private overlayView(v: View): string {

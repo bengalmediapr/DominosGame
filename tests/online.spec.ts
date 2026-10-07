@@ -16,6 +16,7 @@ async function open(page: Page) {
     localStorage.setItem('capicu.net', 'tabs'); // play tab-to-tab: the test machine has no internet broker
   });
   await page.reload();
+  await page.locator('[data-action=start-game]').click(); // past the title screen
   await page.locator('[data-action=online]').click();
 }
 

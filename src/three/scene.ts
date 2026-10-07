@@ -35,6 +35,7 @@ const easeOutBack: Ease = (t) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2;
 interface Tween { elapsed: number; duration: number; update(t: number): void; done(): void }
 
 const HUMAN = 0;
+const UP = new THREE.Vector3(0, 1, 0);
 /** The revolver model is about 9 units long; this makes it ~3 domino tiles long on the table. */
 const GUN_SCALE = 0.6;
 const GAME_CAMERA = { pos: new THREE.Vector3(0, 24, 34), look: new THREE.Vector3(0, -2, -1) };
@@ -75,6 +76,12 @@ export class TableScene {
   private mode: 'menu' | 'game' = 'menu';
   private boardCount = 0;
   private hovered: THREE.Object3D | null = null;
+  private menuFocus: number | null = null;
+  private menuShift = 0;
+  /** Aim below the character, raising them on screen (phones: the menu panel sits at the bottom). */
+  private menuDrop = 0;
+  private readonly menuCam = new THREE.Vector3(0, 42, 95);
+  private readonly menuLook = new THREE.Vector3(0, 2, 0);
   private pickables: THREE.Object3D[] = [];
   private dead = [false, false, false, false];
   private shake = 0;
@@ -162,6 +169,16 @@ export class TableScene {
   }
 
   // ---------- public API ----------
+
+  /**
+   * In the menus: show off the character in this chair (null: slowly circle the table). `shift` moves
+   * them toward the right of the screen, to leave room for a panel on the left.
+   */
+  setMenuFocus(seat: number | null, shift = 0, drop = 0): void {
+    this.menuFocus = seat;
+    this.menuShift = shift;
+    this.menuDrop = drop;
+  }
 
   setMode(mode: 'menu' | 'game'): void {
     this.mode = mode;
@@ -544,10 +561,22 @@ export class TableScene {
       return k < 1;
     });
 
-    if (this.mode === 'menu') {
+    if (this.mode === 'menu' && this.menuFocus !== null) {
+      // Portrait of the character in that chair, seen from across the table.
+      const turn = (this.menuFocus * Math.PI) / 2;
+      const pos = new THREE.Vector3(7 + Math.sin(t * 0.25) * 1.5, 9, SEAT_DIST - 30).applyAxisAngle(UP, turn);
+      const look = new THREE.Vector3(this.menuShift, 0.5 - this.menuDrop, SEAT_DIST).applyAxisAngle(UP, turn);
+      const k = Math.min(1, realDt * 2.5);
+      this.menuCam.lerp(pos, k);
+      this.menuLook.lerp(look, k);
+      this.camera.position.copy(this.menuCam);
+      this.camera.lookAt(this.menuLook);
+    } else if (this.mode === 'menu') {
       const a = t * 0.08;
       this.camera.position.set(Math.sin(a) * 95, 42 + Math.sin(t * 0.3) * 4, Math.cos(a) * 95);
       this.camera.lookAt(0, 2, 0);
+      this.menuCam.copy(this.camera.position);
+      this.menuLook.set(0, 2, 0);
     } else {
       this.camera.position.copy(GAME_CAMERA.pos);
       if (this.focus > 0) {

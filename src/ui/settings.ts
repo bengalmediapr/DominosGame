@@ -9,11 +9,13 @@ export interface Settings {
   countAllHands: boolean;
   volume: number;
   speed: 'slow' | 'normal' | 'fast';
+  /** The character you play as (ui/cast.ts). */
+  character: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   lang: 'es', difficulty: 'normal', targetScore: 500, capicuBonus: true,
-  countAllHands: true, volume: 0.7, speed: 'normal',
+  countAllHands: true, volume: 0.7, speed: 'normal', character: 'nico',
 };
 
 const KEY = 'capicu.settings.v1';
