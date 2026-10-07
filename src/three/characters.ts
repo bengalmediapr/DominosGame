@@ -38,15 +38,15 @@ const mat = (color: THREE.ColorRepresentation, o: THREE.MeshStandardMaterialPara
 
 /** Accessories are built in head-bone space, where the head is roughly 1.2 units wide and faces +z. */
 const LOOKS: Record<string, Look> = {
-  // Wiso: blue shirt, jeans and a Puerto Rico flag cap.
+  // Wiso: sky-blue shirt, jeans and a Puerto Rico flag cap.
   wiso: {
     file: 'Knight',
-    recolor: { '0,0': '#d6a57a', '1,0': '#1b1b1f', '3,0': '#3d7cc9', '7,0': '#2f66ad', '2,1': '#f4f4f4', '7,1': '#24324a', '4,0': '#24324a', '6,0': '#5b3a22' },
+    recolor: { '0,0': '#d6a57a', '1,0': '#1b1b1f', '3,0': '#5cb6ec', '7,0': '#3a9bd6', '2,1': '#f4f4f4', '7,1': '#24324a', '4,0': '#24324a', '6,0': '#5b3a22' },
     dress(head, add) {
       const cap = add(new THREE.Mesh(new THREE.SphereGeometry(0.66, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), mat('#e4002b')));
       cap.position.set(0, 0.62, -0.02);
       cap.scale.set(1, 0.62, 1.05);
-      const visor = add(new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.05, 24, 1, false, -Math.PI / 2, Math.PI), mat('#0050f0')));
+      const visor = add(new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.05, 24, 1, false, -Math.PI / 2, Math.PI), mat('#41a8e6')));
       visor.position.set(0, 0.62, 0.45);
       visor.rotation.x = 0.12;
       const shape = new THREE.Shape();
@@ -67,7 +67,7 @@ const LOOKS: Record<string, Look> = {
       const shell = add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 20, 14, 0, Math.PI * 2, 0, Math.PI / 1.8), mat('#e4002b')));
       shell.scale.set(1.05, 0.85, 0.7);
       mask.add(shell);
-      const colors = ['#f2c230', '#00a86b', '#ffffff', '#0050f0'];
+      const colors = ['#f2c230', '#00a86b', '#ffffff', '#41a8e6'];
       [[0, 0.62, 0], [-0.32, 0.52, 0.5], [0.32, 0.52, -0.5], [-0.5, 0.25, 1.1], [0.5, 0.25, -1.1]].forEach(([x, y, rz], i) => {
         const horn = add(new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.42, 10), mat(colors[i % colors.length])));
         horn.position.set(x, y, 0.05);

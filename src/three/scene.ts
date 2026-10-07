@@ -3,7 +3,7 @@ import type { HandState, Side } from '../engine/game';
 import { Tile, sameTile } from '../engine/tiles';
 import { layoutBoard } from '../ui/layout';
 import {
-  FLOOR_Y, SEAT_DIST, TABLE_HALF, TILE_T, loadDominoModel, makeRevolver, makeTable, makeTile,
+  FLOOR_Y, SEAT_DIST, TABLE_HALF, TILE_T, loadDominoModel, makeRevolver, makeTable, makeTile, type Revolver,
 } from './models';
 import { Avatar, SEAT_LOOKS, loadAvatar, loadChair } from './characters';
 import { Patio, makePatio } from './patio';
@@ -51,7 +51,7 @@ export class TableScene {
   private readonly characters: (Avatar | null)[] = [null, null, null, null];
   private readonly castNames: (LookName | null)[] = [null, null, null, null];
   private readonly avatars = new Map<LookName, Promise<Avatar>>();
-  private readonly revolvers: { group: THREE.Group; drum: THREE.Object3D; rest: THREE.Matrix4 }[] = [];
+  private readonly revolvers: (Revolver & { rest: THREE.Matrix4 })[] = [];
   private readonly hands: THREE.Group[] = [];
   private readonly board = new THREE.Group();
   private readonly patio: Patio;
@@ -240,7 +240,7 @@ export class TableScene {
     const gun = this.revolvers[seat];
     gun.group.visible = true;
     if (seat === HUMAN) {
-      await this.humanRoulette(gun.group, gun.drum, fired, onBang);
+      await this.humanRoulette(gun, fired, onBang);
       return;
     }
     const c = this.characters[seat];
@@ -264,7 +264,7 @@ export class TableScene {
       gun.group.quaternion.slerpQuaternions(from.q, GUN_IN_HAND.q, t);
       c.aim = t;
     });
-    await this.tween(500, (t) => { gun.drum.rotation.y = t * Math.PI * 4; });
+    await this.spinDrum(gun);
     await this.tween(1100, (t) => { c.aim = 1 - Math.abs(Math.sin(t * 50)) * 0.015; });
     if (fired) {
       onBang?.();
@@ -300,7 +300,8 @@ export class TableScene {
 
   // ---------- internals ----------
 
-  private async humanRoulette(gun: THREE.Group, drum: THREE.Object3D, fired: boolean, onBang?: () => void): Promise<void> {
+  private async humanRoulette(revolver: Revolver, fired: boolean, onBang?: () => void): Promise<void> {
+    const gun = revolver.group;
     this.camera.attach(gun);
     const from = { p: gun.position.clone(), q: gun.quaternion.clone(), s: gun.scale.clone() };
     // Lower right of your view, barrel (local +x) aimed up at your right temple; camera is the origin.
@@ -320,7 +321,7 @@ export class TableScene {
       this.roll = 0.08 * t;
       this.zoom = t;
     }, easeInOut);
-    await this.tween(500, (t) => { drum.rotation.y = t * Math.PI * 4; });
+    await this.spinDrum(revolver);
     await this.tween(900, (t) => { gun.position.x = toP.x + Math.sin(t * 70) * 0.008; });
     if (fired) {
       onBang?.();
@@ -349,6 +350,10 @@ export class TableScene {
     this.zoom = 0;
     this.faceLight.intensity = 0;
     this.seats[HUMAN].attach(gun);
+  }
+
+  private spinDrum(gun: Revolver): Promise<void> {
+    return this.tween(500, (t) => { gun.drum.rotation.x = t * Math.PI * 4; });
   }
 
   private muzzleFlash(gun: THREE.Object3D): void {

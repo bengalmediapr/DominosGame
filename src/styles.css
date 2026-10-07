@@ -1,7 +1,7 @@
 :root {
   --pr-red: #e4002b;
-  --pr-blue: #0050f0;
-  --pr-blue-deep: #0a2a7a;
+  --pr-blue: #41a8e6; /* azul celeste, as on the original 1895 flag */
+  --pr-blue-deep: #17618f;
   --sunset-1: #ff7b54;
   --sunset-2: #ffb26b;
   --sunset-3: #ffd56b;
@@ -14,7 +14,7 @@
   --ivory-edge: #d9cfb6;
   --ink: #1b1b1f;
   --text: #fff8ee;
-  --team-0: #4d8dff;
+  --team-0: #5cc0f5;
   --team-1: #ff4f6a;
   --gold: #ffc93c;
   --display: 'Lilita One', 'Trebuchet MS', system-ui, sans-serif;
@@ -70,7 +70,7 @@ html, body {
   font-size: 1.35rem;
   letter-spacing: 0.02em;
   color: var(--text);
-  background: rgba(10, 42, 122, 0.75);
+  background: rgba(23, 97, 143, 0.8); /* --pr-blue-deep */
   border: 2px solid rgba(255, 255, 255, 0.35);
   border-radius: 14px;
   padding: 0.6em 1.6em;
@@ -327,7 +327,7 @@ html, body {
 }
 
 /* ---------- online: create / join / lobby ---------- */
-.btn.mode.online { background: rgba(0, 80, 240, 0.55); }
+.btn.mode.online { background: rgba(65, 168, 230, 0.55); }
 .online-box {
   display: flex;
   flex-direction: column;

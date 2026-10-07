@@ -129,7 +129,7 @@ function placeholderTable(): THREE.Group {
 function beerCan(): THREE.Group {
   const g = new THREE.Group();
   const can = mesh(new THREE.CylinderGeometry(1.2, 1.2, 4.6, 20), mat('#e8e8f0', { metalness: 0.8, roughness: 0.3 }));
-  const label = mesh(new THREE.CylinderGeometry(1.22, 1.22, 2.4, 20, 1, true), mat('#0050f0', { metalness: 0.5, roughness: 0.4 }));
+  const label = mesh(new THREE.CylinderGeometry(1.22, 1.22, 2.4, 20, 1, true), mat('#41a8e6', { metalness: 0.5, roughness: 0.4 }));
   g.add(can, label);
   return g;
 }
@@ -167,40 +167,54 @@ export function makeTable(): THREE.Group {
 
 // ---------- revolver ----------
 
-/** Revolver pointing along +x, grip down, roughly 10 units long. */
-export function makeRevolver(): { group: THREE.Group; drum: THREE.Object3D } {
+export interface Revolver {
+  group: THREE.Group;
+  /** Spins about local +x (the barrel axis). */
+  drum: THREE.Object3D;
+}
+
+/** Simple stand-in shown until the modelled revolver has loaded. */
+function placeholderRevolver(drum: THREE.Object3D): THREE.Group {
   const g = new THREE.Group();
   const steel = mat('#3c3f45', { metalness: 0.9, roughness: 0.35 });
-  const grip = mat('#6b3519', { roughness: 0.6 });
   const barrel = mesh(new THREE.CylinderGeometry(0.38, 0.38, 5.2, 16), steel);
   barrel.rotation.z = Math.PI / 2;
   barrel.position.set(3.3, 0.4, 0);
-  const rib = mesh(new THREE.BoxGeometry(5.2, 0.35, 0.3), steel);
-  rib.position.set(3.3, 0.85, 0);
   const frame = mesh(new THREE.BoxGeometry(3.2, 1.9, 0.9), steel);
-  frame.position.set(0, 0, 0);
-  const drum = new THREE.Group();
   const drumBody = mesh(new THREE.CylinderGeometry(1.05, 1.05, 1.9, 18), steel);
+  drumBody.rotation.z = Math.PI / 2;
   drum.add(drumBody);
-  for (let i = 0; i < 6; i++) {
-    const a = (i * Math.PI) / 3;
-    const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 1.92, 8), mat('#0b0b0d'));
-    hole.position.set(Math.cos(a) * 0.6, 0, Math.sin(a) * 0.6);
-    drum.add(hole);
-  }
-  drum.rotation.z = Math.PI / 2;
-  drum.position.set(0.3, 0.1, 0);
-  const handle = mesh(new THREE.BoxGeometry(1.3, 3.6, 0.95), grip);
+  const handle = mesh(new THREE.BoxGeometry(1.3, 3.6, 0.95), mat('#6b3519', { roughness: 0.6 }));
   handle.position.set(-1.7, -2, 0);
   handle.rotation.z = -0.35;
-  const hammer = mesh(new THREE.BoxGeometry(0.6, 0.8, 0.4), steel);
-  hammer.position.set(-1.6, 1.1, 0);
-  hammer.rotation.z = 0.5;
-  const guard = mesh(new THREE.TorusGeometry(0.7, 0.12, 8, 16, Math.PI), steel);
-  guard.position.set(-0.3, -1, 0);
-  guard.rotation.z = Math.PI;
-  const trigger = mesh(new THREE.BoxGeometry(0.2, 0.8, 0.2), steel);
-  trigger.position.set(-0.4, -1.1, 0);
-  g.add(barrel, rib, frame, drum, handle, hammer, guard, trigger);
-  return { group: g, drum };
+  g.add(barrel, frame, handle);
+  return g;
+}
+
+/**
+ * Revolver pointing along +x, grip down, about 9 units long (model in assets-src/revolver). The
+ * cylinder's axis is the local origin.
+ */
+export function makeRevolver(): Revolver {
+  const group = new THREE.Group();
+  const drum = new THREE.Group();
+  const placeholder = placeholderRevolver(drum);
+  group.add(placeholder, drum);
+  loadGlb('revolver').then(({ scene }) => {
+    const model = scene.clone(true);
+    model.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.castShadow = m.receiveShadow = true;
+      // The scene has no environment map for full metal to reflect, which would render it black.
+      (m.material as THREE.MeshStandardMaterial).metalness = 0.6;
+    });
+    group.remove(placeholder);
+    drum.clear();
+    for (const node of [...model.children]) {
+      if (node.name === 'cylinder') drum.add(node);
+      else group.add(node);
+    }
+  }).catch((err) => console.error('Could not load the revolver', err));
+  return { group, drum };
 }
