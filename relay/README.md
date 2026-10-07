@@ -11,6 +11,8 @@ Cloudflare dashboard → **Workers & Pages → Create → Workers → Import a r
 `bengalmediapr/DominosGame` → project name `capicu-relay` → **Advanced settings → Root directory:
 `relay`** → Deploy. After that, every push to `main` that changes `relay/` redeploys it.
 
+Each push to `main` that touches `relay/` redeploys it (Workers Builds, root directory `relay`).
+
 The game finds it through `DEFAULT_RELAY` in `src/net/api.ts` (its `wss://…workers.dev` address).
 
 ## Try it locally
