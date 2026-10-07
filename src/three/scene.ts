@@ -12,7 +12,7 @@ export type LookName = (typeof SEAT_LOOKS)[number];
 
 /** Seated avatar height (world units) and how far above the floor they sit, so heads clear the table. */
 const AVATAR_HEIGHT = 27;
-const AVATAR_LIFT = 21;
+const AVATAR_LIFT = 17;
 
 
 export interface SceneView {

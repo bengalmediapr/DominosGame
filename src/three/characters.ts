@@ -34,7 +34,7 @@ type Look = (typeof SEAT_LOOKS)[number];
 /** Chairs and the scene were laid out for this root scale (world units per root unit). */
 const ROOT_SCALE = 10.8;
 /** World units per model unit (the models are about 1.75 tall standing). */
-const MODEL_SCALE = 15.5;
+const MODEL_SCALE = 20;
 /** Seated pelvis joint height above the seat, in model units. */
 const PELVIS_ABOVE_SEAT = 0.12;
 
