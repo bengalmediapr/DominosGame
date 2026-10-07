@@ -571,3 +571,5 @@ html, body { overscroll-behavior: none; touch-action: manipulation; -webkit-tap-
 .pause-card { display: flex; flex-direction: column; gap: 0.6rem; min-width: min(320px, 90vw); }
 .pause-card .btn { width: 100%; }
 .press-start { background: rgba(10, 4, 20, 0.7); padding: 0.45rem 1.4rem; border-radius: 999px; }
+/* The top bar stays above the players' name tags. */
+.hud { z-index: 4; }

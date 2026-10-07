@@ -27,6 +27,7 @@ async function humanTurn(page: Page, st: DebugState) {
 }
 
 test('two players at one table: host and guest play a hand together', async ({ browser }) => {
+  test.slow(); // two pages drawing the 3D table on the CPU
   // One browser context = two tabs that can reach each other (BroadcastChannel).
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const host = await context.newPage();
@@ -75,7 +76,7 @@ test('two players at one table: host and guest play a hand together', async ({ b
   // Only the host moves the table on; the guest sees who it's waiting for.
   await expect(guest.locator('.overlay [data-action=next-hand]')).toHaveCount(0);
   await expect(guest.locator('.overlay .card')).toContainText(/anfitrión/);
-  await host.locator('.overlay [data-action=next-hand]').click();
+  await host.locator('.overlay [data-action=next-hand]').click({ force: true }); // the card animates; this machine draws slowly
   await expect.poll(async () => (await state(guest)).overlay).toBeNull();
   await expect(guest.locator('.score .vs')).toContainText('Mano 2');
   expect(errors).toEqual([]);
@@ -100,6 +101,7 @@ test('a guest who leaves is replaced by the AI', async ({ browser }) => {
 });
 
 test('chat at the table, and the host moves people between chairs', async ({ browser }) => {
+  test.slow(); // two pages drawing the 3D table on the CPU
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const host = await context.newPage();
   const guest = await context.newPage();

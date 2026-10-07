@@ -229,8 +229,12 @@ export class App {
   }
 
   private refreshTables(): void {
-    void listTables().then((rows) => { this.tables = rows; }, () => { this.tables = 'error'; })
-      .then(() => { if (this.screen === 'online') this.render(); });
+    void listTables().then((rows): PublicTable[] | 'error' => rows, () => 'error' as const).then((next) => {
+      // Redraw only when the list changed: a redraw replaces the buttons someone may be tapping.
+      const changed = JSON.stringify(next) !== JSON.stringify(this.tables);
+      this.tables = next;
+      if (changed && this.screen === 'online') this.render();
+    });
   }
 
   private async hostOnline(viaSteam: boolean, listed = false): Promise<void> {
@@ -825,14 +829,18 @@ export class App {
   private positionTags(): void {
     if (this.screen !== 'game') return;
     const width = this.ui.clientWidth;
+    // Tags never go over the top bar (menu button, score).
+    const hud = this.ui.querySelector<HTMLElement>('.hud');
+    const top = (hud ? hud.offsetTop + hud.offsetHeight : 60) + 8;
     this.ui.querySelectorAll<HTMLElement>('.tag[data-seat]').forEach((el) => {
       const pos = this.scene.headScreenPos(Number(el.dataset.seat));
       if (!pos) return;
       // Players beyond the edge of a narrow (phone) screen keep their tag on screen, at the edge.
       const half = el.offsetWidth / 2 + 6;
       const x = Math.min(Math.max(pos.x, half), width - half);
+      const y = Math.max(pos.y, top + el.offsetHeight / 2);
       el.classList.toggle('offscreen', x !== pos.x);
-      el.style.transform = `translate(${x}px, ${pos.y}px) translate(-50%, -50%)`;
+      el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
     });
   }
 
