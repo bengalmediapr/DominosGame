@@ -6,8 +6,9 @@
 | Casa de San Juan | `public/models/house.glb` (de `assets-src/house/SanJuanModernHouse2.fbx`) | **Pendiente: confirmar autor y licencia** | **Pendiente** |
 | Mesa de dominó | `public/models/table.glb` (de `assets-src/table/`) | Sketchfab, **pendiente: enlace, autor y licencia** | **Pendiente** |
 | Forma del dominó | `public/models/domino.glb` (de `assets-src/domino/Domino_Generator.blend`) | **Pendiente: confirmar autor y licencia** | **Pendiente** |
+| Revólver (.38 Special) | `public/models/revolver.glb` (de `assets-src/revolver/`) | **Pendiente: confirmar autor y licencia** | **Pendiente** |
 | Texturas de la casa (nombres) | Wood050, Paint004, Asphalt023S, Tiles111, Wood085B | ambientCG | CC0 |
-| Todo lo demás (patio, piscina, cielo, revólver, sonidos) | generado en código | — | del proyecto |
+| Todo lo demás (patio, piscina, cielo, sonidos) | generado en código | — | del proyecto |
 
 Notas:
 - Las texturas originales de la mesa traían el nombre y el logo de una marca de cerveza. Se quitaron con

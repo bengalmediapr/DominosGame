@@ -24,6 +24,7 @@ async function humanTurn(page: Page, st: DebugState) {
 }
 
 test('ruleta: plays hands in 3D and survives (or not) the revolver', async ({ page }) => {
+  test.slow(); // several hands plus roulette scenes: close to the default timeout on CPU-only WebGL
   const errors: string[] = [];
   await setup(page, errors);
   await page.waitForTimeout(800);
