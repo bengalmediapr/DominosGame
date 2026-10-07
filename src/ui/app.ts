@@ -42,6 +42,9 @@ const esc = (text: string): string =>
 
 const CHAT_LINES = 8;
 
+/** Phones and tablets: talk about tapping, not clicking or keys. */
+const TOUCH = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+
 export class App {
   private settings: Settings = loadSettings();
   private screen: Screen = 'menu';
@@ -701,9 +704,15 @@ export class App {
 
   private positionTags(): void {
     if (this.screen !== 'game') return;
+    const width = this.ui.clientWidth;
     this.ui.querySelectorAll<HTMLElement>('.tag[data-seat]').forEach((el) => {
       const pos = this.scene.headScreenPos(Number(el.dataset.seat));
-      if (pos) el.style.transform = `translate(${pos.x}px, ${pos.y}px) translate(-50%, -50%)`;
+      if (!pos) return;
+      // Players beyond the edge of a narrow (phone) screen keep their tag on screen, at the edge.
+      const half = el.offsetWidth / 2 + 6;
+      const x = Math.min(Math.max(pos.x, half), width - half);
+      el.classList.toggle('offscreen', x !== pos.x);
+      el.style.transform = `translate(${x}px, ${pos.y}px) translate(-50%, -50%)`;
     });
   }
 
@@ -906,7 +915,7 @@ export class App {
       <h2>${s.howTo}</h2>
       <ol class="rules">${s.rulesText.map((r) => `<li>${r}</li>`).join('')}</ol>
       <p class="rules"><b>${s.ruleta}:</b> ${s.ruletaDesc} (${CHAMBERS} ${s.chambers.toLowerCase()}, 1 🔫)</p>
-      <p class="note">1–7 · ← → · Enter · Esc · F11</p>
+      <p class="note keys-hint">1–7 · ← → · Enter · Esc · F11</p>
       <button class="btn" data-action="menu">${s.back}</button>
     </main>`;
   }
@@ -973,7 +982,7 @@ export class App {
       ${tags}
       <footer class="me ${myTurn ? 'active' : ''}">
         ${myBubble ? `<div class="bubble ${myBubble.big ? 'big' : ''}">${myBubble.text}</div>` : ''}
-        ${myTurn && !this.selected ? `<p class="hint">${s.clickTiles}</p>` : ''}
+        ${myTurn && !this.selected ? `<p class="hint">${TOUCH ? s.tapTiles : s.clickTiles}</p>` : ''}
         ${this.watching && ruleta && !m.alive[ME] ? `<p class="hint">${s.youAreOut}</p>` : ''}
         ${sideButtons}
         <div class="nameplate"><span class="name">${s.you}</span>

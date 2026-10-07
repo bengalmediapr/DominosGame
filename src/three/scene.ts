@@ -82,7 +82,9 @@ export class TableScene {
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Phones have very dense screens and modest GPUs: render a little below full resolution.
+    const touch = window.matchMedia?.('(pointer: coarse)').matches;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, touch ? 1.5 : 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -101,7 +103,7 @@ export class TableScene {
     this.lamp.position.set(0, 32, 0);
     this.lamp.target.position.set(0, 0, 0);
     this.lamp.castShadow = true;
-    this.lamp.shadow.mapSize.set(2048, 2048);
+    this.lamp.shadow.mapSize.set(touch ? 1024 : 2048, touch ? 1024 : 2048);
     this.lamp.shadow.bias = -0.0004;
     this.scene.add(this.lamp, this.lamp.target);
     this.flash = new THREE.PointLight('#ffd27a', 0, 0, 0);
@@ -501,8 +503,10 @@ export class TableScene {
     const h = this.canvas.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
-    // Keep the whole table in view on narrow windows.
-    this.baseFov = w / h < 1.5 ? 64 : 58;
+    // Keep the whole table in view on narrow windows. On a phone held upright the side players don't
+    // fit without shrinking the table too much; their name tags stay pinned to the screen edges instead.
+    const aspect = w / h;
+    this.baseFov = aspect >= 1.5 ? 58 : aspect >= 1 ? 64 : 74;
     this.camera.fov = this.baseFov;
     this.camera.updateProjectionMatrix();
   }

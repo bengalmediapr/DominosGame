@@ -442,3 +442,48 @@ html, body {
 .public-tables .pt-seats { font-family: var(--display); color: var(--gold); }
 .online-box h3 .btn { padding: 0.1rem 0.55rem; margin-left: 0.3rem; }
 .visibility { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; justify-content: center; }
+
+/* ---------- phones and tablets ---------- */
+html, body { overscroll-behavior: none; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+/* Menus scroll when they don't fit (phones in landscape), and stay clear of notches. */
+.ui .screen.menu, .ui .screen.panel {
+  pointer-events: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  justify-content: safe center;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+    max(1.5rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+}
+.hud { padding-left: max(1rem, env(safe-area-inset-left)); padding-right: max(1rem, env(safe-area-inset-right)); top: env(safe-area-inset-top); }
+.name-chip { top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); }
+.chat { left: max(16px, env(safe-area-inset-left)); bottom: max(16px, env(safe-area-inset-bottom)); }
+
+@media (max-width: 560px) {
+  .menu-buttons { min-width: 0; width: 100%; }
+  .panel h2 { font-size: 2rem; }
+  .ui .screen.menu { justify-content: safe center; padding-top: 4.2rem; }
+  .menu .flag { width: 84px; }
+  .hud { height: 52px; padding-left: 0.5rem; padding-right: 0.5rem; gap: 0.4rem; }
+  .hud .btn.small { padding: 0.35em 0.7em; font-size: 0.9rem; }
+  .score { gap: 0.4rem; font-size: 0.9rem; }
+  .score .vs { font-size: 0.75rem; text-align: center; }
+  .flag-mini { display: none; }
+  .option-row { flex-direction: column; align-items: stretch; gap: 0.4rem; }
+  .online-box { padding: 0.9rem; }
+}
+@media (max-height: 500px) {
+  .ui .screen.menu { justify-content: flex-start; }
+  .menu .flag { display: none; }
+  .logo { font-size: 2.6rem; margin: 0; }
+  .panel h2 { font-size: 1.8rem; margin: 0; }
+}
+
+/* Fingers, not mouse pointers: bigger targets, and inputs big enough that phones don't zoom in. */
+@media (pointer: coarse) {
+  .seg-btn, .btn.small { min-height: 40px; }
+  .seat-move .seg-btn { min-width: 40px; }
+  input, .chat-form input, .join-row input { font-size: 16px; }
+  .chat-log li:nth-last-child(n + 4) { display: none; }
+  .keys-hint { display: none; }
+}
+.tag.offscreen .nameplate { border-style: dashed; }
