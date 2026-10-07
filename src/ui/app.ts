@@ -10,7 +10,7 @@ import { PublicListing, PublicTable, listTables } from '../net/lobbies';
 import { ChatLine, GuestSession, HostSession, LocalSession, Session, TableConfig } from '../net/session';
 import type { TableEvent } from '../net/table';
 import {
-  NetError, SteamBridge, Transport, hostInTabs, hostOnInternet, hostOnSteam, joinInTabs, joinOnInternet, joinOnSteam,
+  NetError, SteamBridge, Transport, hostInTabs, hostOnInternet, hostOnSteam, joinInTabs, joinOnInternet, joinOnSteam, netLog, netLogWatch,
 } from '../net/transport';
 import { View, toEngine, toView } from '../net/view';
 import { ACHIEVEMENTS, platform } from '../platform';
@@ -73,6 +73,8 @@ export class App {
   private profile: Profile | null = savedProfile();
   private leaders: LeaderRow[] | 'error' | null = null;
   private profileNotice: { text: string; ok: boolean } | null = null;
+  private logOpen = false;
+  private logRedraw: ReturnType<typeof setTimeout> | null = null;
   /** Your table on the public list, while its lobby is open. */
   private listing: PublicListing | null = null;
   private tables: PublicTable[] | 'error' | null = null;
@@ -98,6 +100,15 @@ export class App {
     this.scene.onFrame = () => this.positionTags();
     root.addEventListener('click', (e) => this.onClick(e));
     root.addEventListener('submit', (e) => this.onSubmit(e));
+    root.addEventListener('toggle', (e) => {
+      const el = e.target as HTMLDetailsElement;
+      if (el.classList?.contains('net-log')) this.logOpen = el.open;
+    }, true);
+    netLogWatch.onLine = () => {
+      if ((this.screen === 'lobby' || this.screen === 'online') && !this.logRedraw) {
+        this.logRedraw = setTimeout(() => { this.logRedraw = null; this.render(); }, 400);
+      }
+    };
     window.addEventListener('keydown', (e) => this.onKey(e));
     (window as unknown as { __domino: unknown }).__domino = { state: () => this.debugState() };
     void this.initSteam();
@@ -501,6 +512,9 @@ export class App {
       case 'toggle-public': this.setPublic(!this.listing); this.render(); break;
       case 'join-public': void this.joinByCode(value!); break;
       case 'refresh-tables': this.refreshTables(); break;
+      case 'copy-log':
+        void navigator.clipboard?.writeText(netLog().join('\n')).then(() => { el.textContent = '✓'; }, () => {});
+        break;
       case 'invite': (this.session as HostSession | null)?.invite(); break;
       case 'lobby-mode': (this.session as HostSession).setMode(value as Mode); this.render(); break;
       case 'start': (this.session as HostSession).start(); break;
@@ -634,6 +648,7 @@ export class App {
         ? legalMoves(h).map((m) => `${m.tile.join('-')}:${m.side}`) : [],
       selected: this.selected?.join('-') ?? null,
       listed: !!this.listing,
+      netLog: netLog(),
       lobby: lobby ? { code: lobby.code, me: lobby.me, seats: lobby.seats.map((s) => s.kind), names: lobby.seats.map((s) => s.name) } : null,
       notice: this.notice,
       chat: this.chatLines.map((l) => `${l.name}: ${l.text}`),
@@ -722,6 +737,16 @@ export class App {
       <path d="M0 0 L52 30 L0 60 Z" fill="var(--pr-blue)"/><path d="${star(17, 30, 11)}" fill="#fff"/></svg>`;
   }
 
+  /** The connection log, folded away, for when online play fails. */
+  private connectionLog(open: boolean): string {
+    const lines = netLog();
+    if (!lines.length) return '';
+    const s = t();
+    return `<details class="net-log" ${open || this.logOpen ? 'open' : ''}><summary>${s.connectionDetails}</summary>
+      <pre>${esc(lines.join('\n'))}</pre>
+      <button class="btn small" data-action="copy-log">${s.copyDetails}</button></details>`;
+  }
+
   private menuView(): string {
     const s = t();
     const canContinue = this.savedMatch() !== null;
@@ -784,6 +809,7 @@ export class App {
       <p class="note playing-as">${s.playingAs} <b>${esc(this.myNameForDisplay())}</b>
         <button class="btn small ghost" data-action="profile">${this.profile ? s.change : s.chooseName}</button></p>
       ${this.notice ? `<p class="notice">${this.notice}</p>` : ''}
+      ${this.notice && this.notice !== t().connecting ? this.connectionLog(true) : ''}
       ${steam}${publicBox}${tabs}
       <button class="btn ghost" data-action="menu">${s.back}</button>
     </main>`;
@@ -825,6 +851,7 @@ export class App {
         ${lobby.canInvite ? `<button class="btn" data-action="invite">${s.inviteFriends}</button>` : ''}
         ${lobby.isHost ? `<button class="btn primary" data-action="start">${s.start}</button>` : `<p class="note">${s.waitingStart}</p>`}
       </div>
+      ${lobby.isHost ? this.connectionLog(false) : ''}
       <button class="btn ghost" data-action="menu">${s.leaveTable}</button>
     </main>`;
   }

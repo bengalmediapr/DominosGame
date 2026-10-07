@@ -2,7 +2,7 @@ import type { Difficulty } from '../engine/ai';
 import type { MatchState, Mode, Rules } from '../engine/game';
 import { Intent, SeatInfo, Snapshot, Table, TableEvent, defaultSeats } from './table';
 import { cleanChat, nameKey } from './names';
-import { NetMessage, PROTOCOL_VERSION, Transport } from './transport';
+import { NetMessage, PROTOCOL_VERSION, Transport, netLog } from './transport';
 import { View, rotateEvent, rotateSnapshot } from './view';
 
 export interface TableConfig {
@@ -133,7 +133,7 @@ export class LocalSession extends Session {
 // ---------- online host ----------
 
 /** How long a guest waits for the host to answer before giving up. */
-export const GUEST_TIMEOUT_MS = 8000;
+export const GUEST_TIMEOUT_MS = 15_000;
 
 /** Friends fill the host's partner's seat first, so two friends play as a team in parejas. */
 const JOIN_ORDER = [2, 1, 3];
@@ -189,6 +189,7 @@ export class HostSession extends Session {
 
   private onMessage(from: string, msg: NetMessage): void {
     if (msg.t === 'hello') {
+      netLog(`hello from ${from.slice(0, 8)} (${String(msg.name).slice(0, 20)}, v${msg.version})`);
       if (msg.version !== PROTOCOL_VERSION) return;
       let seat = this.seatOf(from);
       if (seat < 0) {
@@ -317,7 +318,7 @@ export class GuestSession extends Session {
     }, 1000);
     // Nobody answered: wrong code, or the table is somewhere this transport can't reach.
     const giveUp = setTimeout(() => {
-      if (!this.lobbyState && !this.snap && !this.ended) this.end('noAnswer');
+      if (!this.lobbyState && !this.snap && !this.ended) { netLog('the table never answered hello'); this.end('noAnswer'); }
     }, GUEST_TIMEOUT_MS);
     this.offs.push(() => clearInterval(retry), () => clearTimeout(giveUp));
   }
@@ -325,6 +326,7 @@ export class GuestSession extends Session {
   private onMessage(from: string, msg: NetMessage): void {
     if (this.host !== '*' && from !== this.host) return;
     if (msg.t === 'lobby') {
+      if (!this.lobbyState) netLog('seated at the table');
       this.host = from;
       this.me = msg.you;
       this.lobbyState = { seats: msg.seats, mode: msg.mode };

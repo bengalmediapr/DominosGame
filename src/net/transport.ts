@@ -209,7 +209,13 @@ class PeerTransport implements Transport {
   private closed = false;
 
   constructor(private readonly peer: PeerInstance, readonly selfId: string, readonly hostId: string) {
-    peer.on('connection', (conn) => this.adopt(conn));
+    peer.on('connection', (conn) => {
+      netLog(`guest ${conn.peer.slice(0, 8)} is knocking`);
+      watchIce(conn, `guest ${conn.peer.slice(0, 8)}`);
+      this.adopt(conn);
+    });
+    peer.on('error', (err) => netLog(`peer error: ${err.type} ${err.message}`.slice(0, 160)));
+    peer.on('disconnected', () => netLog('broker: disconnected, reconnecting'));
     // The broker forgets a peer whose tab went to sleep (switching to WhatsApp to send the code is
     // enough on a heavy page). Register again, under the same id, so the table code keeps working.
     peer.on('disconnected', () => this.reconnect());
@@ -231,12 +237,13 @@ class PeerTransport implements Transport {
   };
 
   adopt(conn: DataConnection): void {
-    const ready = () => this.conns.set(conn.peer, conn);
+    const ready = () => { netLog(`channel open with ${conn.peer.slice(0, 8)}`); this.conns.set(conn.peer, conn); };
     if (conn.open) ready();
     else conn.on('open', ready);
     conn.on('data', (data) => {
       for (const cb of this.messageCbs) cb(conn.peer, data as NetMessage);
     });
+    conn.on('error', (err) => netLog(`channel error: ${String((err as Error)?.message ?? err)}`.slice(0, 160)));
     const gone = () => {
       if (this.conns.get(conn.peer) !== conn) return;
       this.conns.delete(conn.peer);
@@ -270,6 +277,48 @@ class PeerTransport implements Transport {
 
 const loadPeer = (): Promise<PeerLib> => import('peerjs');
 
+/**
+ * What happened while connecting, step by step: shown (and copyable) when joining fails, so a
+ * failure on someone's phone can be diagnosed from a message.
+ */
+const netLogLines: string[] = [];
+let netLogStart = Date.now();
+/** Called after each new line (the UI redraws the log). */
+export const netLogWatch: { onLine: (() => void) | null } = { onLine: null };
+export function netLog(line?: string): string[] {
+  if (line) {
+    netLogLines.push(`${((Date.now() - netLogStart) / 1000).toFixed(1)}s ${line}`);
+    netLogWatch.onLine?.();
+  }
+  return netLogLines.slice(-60);
+}
+export function resetNetLog(): void {
+  netLogLines.length = 0;
+  netLogStart = Date.now();
+  netLog(`${navigator.userAgent.replace(/\s+/g, ' ').slice(0, 140)}`);
+}
+
+/** Follow a connection's WebRTC negotiation: which kinds of routes it finds, and how it ends up. */
+function watchIce(conn: DataConnection, who: string): void {
+  let tries = 0;
+  const attach = () => {
+    const pc = conn.peerConnection as RTCPeerConnection | undefined;
+    if (!pc) {
+      if (tries++ < 50) setTimeout(attach, 100);
+      return;
+    }
+    const kinds = new Set<string>();
+    pc.addEventListener('icecandidate', (e) => {
+      const type = e.candidate?.type ?? (e.candidate ? /typ (\w+)/.exec(e.candidate.candidate)?.[1] : null);
+      if (type && !kinds.has(type)) { kinds.add(type); netLog(`${who}: route found (${type})`); }
+      if (!e.candidate) netLog(`${who}: routes gathered [${[...kinds].join(', ') || 'none'}]`);
+    });
+    pc.addEventListener('iceconnectionstatechange', () => netLog(`${who}: ice ${pc.iceConnectionState}`));
+    pc.addEventListener('connectionstatechange', () => netLog(`${who}: connection ${pc.connectionState}`));
+  };
+  attach();
+}
+
 /** Relay servers from our server, or null to use PeerJS's defaults. */
 async function iceServers(): Promise<RTCIceServer[] | null> {
   try {
@@ -294,6 +343,7 @@ function brokerOverride(): { host: string; port: number; path: string; secure: b
 
 async function newPeer(id?: string): Promise<PeerInstance> {
   const [{ Peer }, ice] = await Promise.all([loadPeer(), iceServers()]);
+  netLog(ice ? `relay servers: ${ice.length} (${ice.some((s) => String(s.urls).includes('turn')) ? 'with TURN' : 'no TURN'})` : 'relay servers: none (PeerJS defaults)');
   const options = { debug: 0 as const, ...brokerOverride(), ...(ice ? { config: { iceServers: ice } } : {}) };
   return id ? new Peer(id, options) : new Peer(options);
 }
@@ -302,8 +352,9 @@ async function newPeer(id?: string): Promise<PeerInstance> {
 function opened(peer: PeerInstance, ms: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new NetError('unreachable')), ms);
-    peer.once('open', (id) => { clearTimeout(timer); resolve(id); });
+    peer.once('open', (id) => { clearTimeout(timer); netLog(`broker: registered as ${id}`); resolve(id); });
     peer.once('error', (err) => {
+      netLog(`broker error: ${err.type} ${err.message}`.slice(0, 160));
       clearTimeout(timer);
       reject(err.type === 'unavailable-id' ? err : new NetError('unreachable'));
     });
@@ -311,6 +362,8 @@ function opened(peer: PeerInstance, ms: number): Promise<string> {
 }
 
 export async function hostOnInternet(): Promise<Transport & { code: string }> {
+  resetNetLog();
+  netLog('creating a table');
   // A code already in use on the broker is rare; just pick another.
   for (let attempt = 0; attempt < 4; attempt++) {
     const code = tableCode();
@@ -326,7 +379,11 @@ export async function hostOnInternet(): Promise<Transport & { code: string }> {
   throw new NetError('unreachable');
 }
 
+const JOIN_TIMEOUT_MS = 45_000;
+
 export async function joinOnInternet(code: string): Promise<Transport> {
+  resetNetLog();
+  netLog(`joining table ${code.trim().toUpperCase()}`);
   const peer = await newPeer();
   const selfId = await opened(peer, 12_000).catch((err) => {
     peer.destroy();
@@ -335,11 +392,13 @@ export async function joinOnInternet(code: string): Promise<Transport> {
   const hostId = PEER_PREFIX + code.trim().toUpperCase();
   const transport = new PeerTransport(peer, selfId, hostId);
   const conn = peer.connect(hostId, { reliable: true, serialization: 'json' });
+  watchIce(conn, 'to table');
   transport.adopt(conn);
   return new Promise((resolve, reject) => {
     // The broker answers at once when no table has this code; silence means the table exists but the
     // two networks couldn't open a path to each other, even through the relays.
-    const timer = setTimeout(() => { transport.close(); reject(new NetError('blocked')); }, 20_000);
+    // Generous: a phone busy loading the 3D table, connecting through a relay, can take a while.
+    const timer = setTimeout(() => { netLog('gave up after 45 s'); transport.close(); reject(new NetError('blocked')); }, JOIN_TIMEOUT_MS);
     conn.once('open', () => { clearTimeout(timer); resolve(transport); });
     peer.on('error', (err) => {
       if (err.type !== 'peer-unavailable') return;
