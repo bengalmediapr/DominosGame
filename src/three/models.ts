@@ -129,7 +129,7 @@ function placeholderTable(): THREE.Group {
 function beerCan(): THREE.Group {
   const g = new THREE.Group();
   const can = mesh(new THREE.CylinderGeometry(1.2, 1.2, 4.6, 20), mat('#e8e8f0', { metalness: 0.8, roughness: 0.3 }));
-  const label = mesh(new THREE.CylinderGeometry(1.22, 1.22, 2.4, 20, 1, true), mat('#0050f0', { metalness: 0.5, roughness: 0.4 }));
+  const label = mesh(new THREE.CylinderGeometry(1.22, 1.22, 2.4, 20, 1, true), mat('#41a8e6', { metalness: 0.5, roughness: 0.4 }));
   g.add(can, label);
   return g;
 }
