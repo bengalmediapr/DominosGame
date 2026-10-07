@@ -38,8 +38,10 @@ Para comprobarlo, abre `https://dominosgame.pages.dev/api/ice`: debe mostrar una
 - `functions/api/[[route]].ts` es la función de Cloudflare Pages; la lógica está en `server/api.ts`.
 - Cada nombre es único: no cuentan las mayúsculas, los acentos ni los espacios/guiones ("José_PR" = "jose pr").
   Los nombres de los personajes (Wiso, Papo, Doña Lola, Cheo) están reservados.
-- Tu computadora guarda una clave secreta que prueba que el nombre es tuyo. Si borras los datos del
-  navegador, pierdes el nombre (queda tomado). Más adelante se puede añadir recuperar por correo o Steam.
+- Cada nombre tiene una **clave** que escoge quien lo crea. Con nombre y clave se entra desde cualquier
+  computadora o celular ("¿Ya tienes nombre? Entra"), y los puntos vienen con el nombre. Cinco claves
+  incorrectas seguidas bloquean ese nombre por 15 minutos. El servidor solo guarda la clave cifrada
+  (PBKDF2), nunca la clave en sí. Si alguien olvida su clave, por ahora no hay forma de recuperarla.
 - Al terminar una partida (o morir en la Ruleta) el juego suma: en Parejas, los puntos de tu equipo; en la
   Ruleta, las fichas que les quedan a los demás en cada mano que ganas. Cada partida cuenta una sola vez.
 - Los puntos los reporta el juego de cada jugador, así que alguien que modifique el juego podría hacer

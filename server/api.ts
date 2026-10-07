@@ -2,15 +2,17 @@
  * The name server: unique player names and their accumulated points, on Cloudflare Pages Functions
  * with a D1 database bound as `DB` (see docs/NOMBRES_Y_PUNTOS.md). Routes, all JSON:
  *
- *   POST  /api/players      {name}                  claim a name → {token, ...profile}
+ *   POST  /api/players      {name, pin}             claim a name, with a secret code → {token, ...profile}
+ *   POST  /api/login        {name, pin}             sign in to your name on another device → {token, ...profile}
  *   GET   /api/me                                   your profile (Authorization: Bearer <token>)
- *   PATCH /api/me           {name}                  change your name, keeping your points
+ *   PATCH /api/me           {name?, pin?}           change your name (keeping your points) or your code
  *   POST  /api/results      {matchId, points, won}  add a finished match to your totals (once per matchId)
  *   GET   /api/leaderboard                          top players by points
  *   GET   /api/ice                                  WebRTC relay (TURN) servers for online play
  *
- * A token is the only proof of owning a name; the server keeps just its SHA-256 hash. Results are
- * reported by each player's own game, so the server can only check that they are plausible.
+ * Each device gets its own token; the server keeps only hashes of tokens and codes. Five wrong codes in
+ * a row lock the name for 15 minutes. Results are reported by each player's own game, so the server
+ * can only check that they are plausible.
  */
 import { cleanName, isReserved, nameKey } from '../src/net/names';
 
@@ -34,6 +36,12 @@ export interface Env {
 /** More than any real match can score (a match ends once a team passes 500). */
 export const MAX_MATCH_POINTS = 1500;
 const LEADERBOARD_SIZE = 20;
+export const PIN_MIN = 4;
+export const PIN_MAX = 32;
+const MAX_FAILED_LOGINS = 5;
+const LOCK_MS = 15 * 60_000;
+/** Workers bill CPU time; with the lockout above, this is plenty against guessing. */
+const PIN_ITERATIONS = 10_000;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS players (
@@ -55,6 +63,19 @@ const SCHEMA = [
     at INTEGER NOT NULL,
     PRIMARY KEY (player_id, match_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS tokens (
+    token_hash TEXT PRIMARY KEY,
+    player_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+];
+
+/** Columns added after the first release; adding one that already exists fails harmlessly. */
+const ADDED_COLUMNS = [
+  'ALTER TABLE players ADD COLUMN pin_hash TEXT',
+  'ALTER TABLE players ADD COLUMN pin_salt TEXT',
+  'ALTER TABLE players ADD COLUMN failed_logins INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE players ADD COLUMN locked_until INTEGER NOT NULL DEFAULT 0',
 ];
 
 const schemaReady = new WeakMap<D1Database, Promise<void>>();
@@ -65,6 +86,13 @@ function ensureSchema(db: D1Database): Promise<void> {
   if (!ready) {
     ready = (async () => {
       for (const sql of SCHEMA) await db.prepare(sql).run();
+      for (const sql of ADDED_COLUMNS) {
+        try {
+          await db.prepare(sql).run();
+        } catch (err) {
+          if (!/duplicate column/i.test(String(err))) throw err;
+        }
+      }
     })();
     ready.catch(() => schemaReady.delete(db));
     schemaReady.set(db, ready);
@@ -93,22 +121,54 @@ async function sha256(text: string): Promise<string> {
 }
 
 function newToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return hex(crypto.getRandomValues(new Uint8Array(32)));
 }
 
-interface PlayerRow { id: number; name: string; points: number; wins: number; played: number }
+const hex = (bytes: Uint8Array): string => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+async function pinHash(pin: string, salt: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode(salt), iterations: PIN_ITERATIONS }, key, 256);
+  return hex(new Uint8Array(bits));
+}
+
+/** Compares without stopping at the first difference. */
+function sameHash(a: string, b: string): boolean {
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+const validPin = (pin: unknown): pin is string =>
+  typeof pin === 'string' && [...pin].length >= PIN_MIN && [...pin].length <= PIN_MAX;
+
+const PLAYER_COLUMNS = 'p.id, p.name, p.points, p.wins, p.played, p.pin_hash IS NOT NULL AS has_pin';
+
+interface PlayerRow { id: number; name: string; points: number; wins: number; played: number; has_pin: number }
 
 async function profile(db: D1Database, p: PlayerRow) {
   const above = await db.prepare('SELECT COUNT(*) AS n FROM players WHERE points > ?').bind(p.points).first<{ n: number }>();
-  return { name: p.name, points: p.points, wins: p.wins, played: p.played, rank: (above?.n ?? 0) + 1 };
+  return { name: p.name, points: p.points, wins: p.wins, played: p.played, rank: (above?.n ?? 0) + 1, hasPin: !!p.has_pin };
 }
+
+const playerById = (db: D1Database, id: number): Promise<PlayerRow | null> =>
+  db.prepare(`SELECT ${PLAYER_COLUMNS} FROM players p WHERE p.id = ?`).bind(id).first<PlayerRow>();
 
 async function playerFor(db: D1Database, req: Request): Promise<PlayerRow | null> {
   const token = /^Bearer ([0-9a-f]{64})$/.exec(req.headers.get('authorization') ?? '')?.[1];
   if (!token) return null;
-  return db.prepare('SELECT id, name, points, wins, played FROM players WHERE token_hash = ?')
-    .bind(await sha256(token)).first<PlayerRow>();
+  const hash = await sha256(token);
+  // The device that claimed the name keeps its token in players; devices that signed in later, in tokens.
+  return db.prepare(`SELECT ${PLAYER_COLUMNS} FROM players p WHERE p.token_hash = ?
+    UNION SELECT ${PLAYER_COLUMNS} FROM tokens t JOIN players p ON p.id = t.player_id WHERE t.token_hash = ?`)
+    .bind(hash, hash).first<PlayerRow>();
+}
+
+async function setPin(db: D1Database, playerId: number, pin: string): Promise<void> {
+  const salt = newToken();
+  await db.prepare('UPDATE players SET pin_hash = ?, pin_salt = ?, failed_logins = 0, locked_until = 0 WHERE id = ?')
+    .bind(await pinHash(pin, salt), salt, playerId).run();
 }
 
 async function body(req: Request): Promise<Record<string, unknown>> {
@@ -169,8 +229,10 @@ export async function handle(req: Request, env: Env): Promise<Response> {
 
   switch (route) {
     case 'POST /api/players': {
-      const check = await nameProblem(db, (await body(req)).name);
+      const input = await body(req);
+      const check = await nameProblem(db, input.name);
       if ('error' in check) return fail(check.error === 'taken' ? 409 : 400, check.error);
+      if (!validPin(input.pin)) return fail(400, 'invalidPin');
       const token = newToken();
       try {
         await db.prepare('INSERT INTO players (name, name_key, token_hash, created_at) VALUES (?, ?, ?, ?)')
@@ -179,9 +241,30 @@ export async function handle(req: Request, env: Env): Promise<Response> {
         if (isUniqueViolation(err)) return fail(409, 'taken'); // someone claimed it a moment earlier
         throw err;
       }
-      const row = await db.prepare('SELECT id, name, points, wins, played FROM players WHERE name_key = ?')
-        .bind(nameKey(check.name)).first<PlayerRow>();
-      return json({ token, ...(await profile(db, row!)) }, 201);
+      const { id } = (await db.prepare('SELECT id FROM players WHERE name_key = ?').bind(nameKey(check.name)).first<{ id: number }>())!;
+      await setPin(db, id, input.pin);
+      return json({ token, ...(await profile(db, (await playerById(db, id))!)) }, 201);
+    }
+
+    case 'POST /api/login': {
+      const { name, pin } = await body(req);
+      if (typeof name !== 'string' || typeof pin !== 'string') return fail(400, 'invalid');
+      const row = await db.prepare('SELECT id, pin_hash, pin_salt, failed_logins, locked_until FROM players WHERE name_key = ?')
+        .bind(nameKey(cleanName(name) ?? name)).first<{ id: number; pin_hash: string | null; pin_salt: string | null; failed_logins: number; locked_until: number }>();
+      if (!row || !row.pin_hash || !row.pin_salt) return fail(404, 'unknownName');
+      if (row.locked_until > Date.now()) return fail(429, 'locked');
+      if (!sameHash(await pinHash(pin, row.pin_salt), row.pin_hash)) {
+        const failed = row.failed_logins + 1;
+        const lock = failed >= MAX_FAILED_LOGINS;
+        await db.prepare('UPDATE players SET failed_logins = ?, locked_until = ? WHERE id = ?')
+          .bind(lock ? 0 : failed, lock ? Date.now() + LOCK_MS : 0, row.id).run();
+        return fail(lock ? 429 : 401, lock ? 'locked' : 'wrongPin');
+      }
+      const token = newToken();
+      await db.prepare('UPDATE players SET failed_logins = 0 WHERE id = ?').bind(row.id).run();
+      await db.prepare('INSERT INTO tokens (token_hash, player_id, created_at) VALUES (?, ?, ?)')
+        .bind(await sha256(token), row.id, Date.now()).run();
+      return json({ token, ...(await profile(db, (await playerById(db, row.id))!)) });
     }
 
     case 'GET /api/me': {
@@ -192,15 +275,22 @@ export async function handle(req: Request, env: Env): Promise<Response> {
     case 'PATCH /api/me': {
       const me = await playerFor(db, req);
       if (!me) return fail(401, 'unknownPlayer');
-      const check = await nameProblem(db, (await body(req)).name, me.id);
-      if ('error' in check) return fail(check.error === 'taken' ? 409 : 400, check.error);
-      try {
-        await db.prepare('UPDATE players SET name = ?, name_key = ? WHERE id = ?').bind(check.name, nameKey(check.name), me.id).run();
-      } catch (err) {
-        if (isUniqueViolation(err)) return fail(409, 'taken');
-        throw err;
+      const input = await body(req);
+      if (input.pin !== undefined) {
+        if (!validPin(input.pin)) return fail(400, 'invalidPin');
+        await setPin(db, me.id, input.pin);
       }
-      return json(await profile(db, { ...me, name: check.name }));
+      if (input.name !== undefined) {
+        const check = await nameProblem(db, input.name, me.id);
+        if ('error' in check) return fail(check.error === 'taken' ? 409 : 400, check.error);
+        try {
+          await db.prepare('UPDATE players SET name = ?, name_key = ? WHERE id = ?').bind(check.name, nameKey(check.name), me.id).run();
+        } catch (err) {
+          if (isUniqueViolation(err)) return fail(409, 'taken');
+          throw err;
+        }
+      }
+      return json(await profile(db, (await playerById(db, me.id))!));
     }
 
     case 'POST /api/results': {
@@ -219,8 +309,7 @@ export async function handle(req: Request, env: Env): Promise<Response> {
         await db.prepare('UPDATE players SET points = points + ?, wins = wins + ?, played = played + 1 WHERE id = ?')
           .bind(points, won ? 1 : 0, me.id).run();
       }
-      const row = await db.prepare('SELECT id, name, points, wins, played FROM players WHERE id = ?').bind(me.id).first<PlayerRow>();
-      return json(await profile(db, row!));
+      return json(await profile(db, (await playerById(db, me.id))!));
     }
 
     case 'GET /api/leaderboard': {

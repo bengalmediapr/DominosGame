@@ -11,6 +11,8 @@ export interface Profile {
   wins: number;
   played: number;
   rank: number;
+  /** Older names may have no code yet: they can't be signed in to from another device until they get one. */
+  hasPin: boolean;
 }
 
 export interface LeaderRow {
@@ -20,7 +22,11 @@ export interface LeaderRow {
   played: number;
 }
 
-export type ProfileError = 'taken' | 'invalid' | 'reserved' | 'offline' | 'noServer' | 'unknownPlayer';
+export type ProfileError =
+  | 'taken' | 'invalid' | 'reserved' | 'offline' | 'noServer' | 'unknownPlayer'
+  | 'invalidPin' | 'wrongPin' | 'locked' | 'unknownName';
+
+const KNOWN_ERRORS: ProfileError[] = ['taken', 'invalid', 'reserved', 'unknownPlayer', 'invalidPin', 'wrongPin', 'locked', 'unknownName'];
 
 export class ProfileFailure extends Error {
   constructor(readonly reason: ProfileError) {
@@ -75,7 +81,7 @@ async function call<T>(method: string, path: string, body?: unknown, token?: str
   const data = await res.json().catch(() => null) as (T & { error?: string }) | null;
   if (res.ok && data) return data;
   const error = data?.error;
-  if (error === 'taken' || error === 'invalid' || error === 'reserved' || error === 'unknownPlayer') throw new ProfileFailure(error);
+  if (KNOWN_ERRORS.includes(error as ProfileError)) throw new ProfileFailure(error as ProfileError);
   // No JSON answer: a host with no name server (local development, or the database isn't bound yet).
   throw new ProfileFailure(res.status === 503 || !data ? 'noServer' : 'offline');
 }
@@ -90,12 +96,30 @@ function remember(tok: string, profile: Profile): Profile {
   return profile;
 }
 
-/** Take a name for the first time, or change yours (your points stay with you). */
-export async function setName(name: string): Promise<Profile> {
-  const tok = token();
-  if (tok) return remember(tok, await call<Profile>('PATCH', '/me', { name }, tok));
-  const { token: fresh, ...profile } = await call<Profile & { token: string }>('POST', '/players', { name });
+/** Take a new name, protected by a secret code. */
+export async function createName(name: string, pin: string): Promise<Profile> {
+  const { token: fresh, ...profile } = await call<Profile & { token: string }>('POST', '/players', { name, pin });
   return remember(fresh, profile);
+}
+
+/** Use your name on this device too: your points come with it. */
+export async function signIn(name: string, pin: string): Promise<Profile> {
+  const { token: fresh, ...profile } = await call<Profile & { token: string }>('POST', '/login', { name, pin });
+  write(PENDING_KEY, null); // results queued here belonged to whoever was signed in before
+  return remember(fresh, profile);
+}
+
+/** Change your name (your points stay with you) and/or your code. */
+export async function updateProfile(change: { name?: string; pin?: string }): Promise<Profile> {
+  const tok = token();
+  if (!tok) throw new ProfileFailure('unknownPlayer');
+  return remember(tok, await call<Profile>('PATCH', '/me', change, tok));
+}
+
+/** Forget your name on this device; your code brings it back. */
+export function signOut(): void {
+  write(KEY, null);
+  write(PENDING_KEY, null);
 }
 
 /** Fresh points and rank from the server, sending any results it hasn't got yet first. */

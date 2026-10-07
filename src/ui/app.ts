@@ -3,7 +3,8 @@ import {
 } from '../engine/game';
 import { Tile, handPips, sameTile } from '../engine/tiles';
 import {
-  LeaderRow, Profile, ProfileFailure, leaderboard, matchPoints, newMatchId, refreshProfile, reportResult, savedProfile, setName,
+  LeaderRow, Profile, ProfileFailure, createName, leaderboard, matchPoints, newMatchId, refreshProfile, reportResult, savedProfile,
+  signIn, signOut, updateProfile,
 } from '../net/profile';
 import { ChatLine, GuestSession, HostSession, LocalSession, Session, TableConfig } from '../net/session';
 import type { TableEvent } from '../net/table';
@@ -379,16 +380,21 @@ export class App {
     void refreshProfile().then((p) => { this.profile = p; this.render(); }).catch(() => {});
   }
 
-  private async saveName(raw: string): Promise<void> {
+  /** Run a name/code change against the server and say how it went. */
+  private async profileAction(action: () => Promise<Profile>, okText: string): Promise<void> {
     const s = t();
     try {
-      this.profile = await setName(raw);
-      this.profileNotice = { text: s.nameSaved, ok: true };
+      this.profile = await action();
+      this.profileNotice = { text: okText, ok: true };
+      this.ui.querySelectorAll<HTMLInputElement>('input[type=password]').forEach((el) => { el.value = ''; });
+      void leaderboard().then((rows) => { this.leaders = rows; this.render(); }, () => {});
     } catch (err) {
       const reason = err instanceof ProfileFailure ? err.reason : 'offline';
-      const text = { taken: s.nameTaken, invalid: s.nameInvalid, reserved: s.nameReserved, noServer: s.serverMissing }[reason as string]
-        ?? s.serverOffline;
-      this.profileNotice = { text, ok: false };
+      const messages: Partial<Record<string, string>> = {
+        taken: s.nameTaken, invalid: s.nameInvalid, reserved: s.nameReserved, noServer: s.serverMissing,
+        invalidPin: s.pinInvalid, wrongPin: s.pinWrong, unknownName: s.pinWrong, locked: s.pinLocked,
+      };
+      this.profileNotice = { text: messages[reason] ?? s.serverOffline, ok: false };
     }
     if (this.screen === 'profile') this.render();
   }
@@ -466,6 +472,12 @@ export class App {
       case 'start': (this.session as HostSession).start(); break;
       case 'seat-swap': (this.session as HostSession).swapSeats(Number(el.dataset.a), Number(el.dataset.b)); break;
       case 'profile': this.openProfile(); break;
+      case 'sign-out':
+        signOut();
+        this.profile = null;
+        this.profileNotice = { text: t().signOutNote, ok: true };
+        this.render();
+        break;
       case 'menu': this.goMenu(); break;
       case 'quit': platform.quit(); break;
       case 'fullscreen': platform.toggleFullscreen(); break;
@@ -490,9 +502,26 @@ export class App {
       this.chatInput.value = '';
       return;
     }
+    const field = (id: string) => (form.querySelector(`#${id}`) as HTMLInputElement).value;
+    const s = t();
+    if (form.id === 'create-form') {
+      e.preventDefault();
+      void this.profileAction(() => createName(field('name-input'), field('pin-input')), s.nameSaved);
+      return;
+    }
+    if (form.id === 'signin-form') {
+      e.preventDefault();
+      void this.profileAction(() => signIn(field('login-name'), field('login-pin')), s.welcomeBack);
+      return;
+    }
     if (form.id === 'name-form') {
       e.preventDefault();
-      void this.saveName((form.querySelector('#name-input') as HTMLInputElement).value);
+      void this.profileAction(() => updateProfile({ name: field('name-input') }), s.nameSaved);
+      return;
+    }
+    if (form.id === 'pin-form') {
+      e.preventDefault();
+      void this.profileAction(() => updateProfile({ pin: field('pin-new') }), s.pinSaved);
       return;
     }
     if (form.id !== 'join-form') return;
@@ -755,14 +784,37 @@ export class App {
       : `<ol class="leaders">${this.leaders.map((r) => `<li class="${p && r.name === p.name ? 'me' : ''}">
           <span class="leader-name">${esc(r.name)}</span><span><b>${r.points}</b> ${s.pointsLabel.toLowerCase()}</span>
           <span class="leader-wins">${r.wins}/${r.played}</span></li>`).join('')}</ol>`;
+    const pinField = (id: string, label: string, complete: string) =>
+      `<input id="${id}" type="password" minlength="4" maxlength="32" autocomplete="${complete}" placeholder="${label}">`;
+    const account = p
+      ? `<h2>${s.yourName}</h2>
+        <form id="name-form" class="join-row">
+          <input id="name-input" maxlength="16" autocomplete="username" spellcheck="false" value="${esc(p.name)}">
+          <button class="btn small" type="submit">${s.save}</button>
+        </form>
+        ${notice}${stats}
+        ${p.hasPin ? '' : `<p class="notice">${s.pinMissing}</p>`}
+        <form id="pin-form" class="join-row">
+          ${pinField('pin-new', s.newPin, 'new-password')}
+          <button class="btn small" type="submit">${p.hasPin ? s.changePin : s.setPin}</button>
+          <button class="btn small ghost" type="button" data-action="sign-out">${s.signOut}</button>
+        </form>`
+      : `<h2>${s.chooseName}</h2>
+        <form id="create-form" class="join-row">
+          <input id="name-input" maxlength="16" autocomplete="username" spellcheck="false" value="${esc(this.steamName ?? '')}" placeholder="${s.yourName}">
+          ${pinField('pin-input', s.pinLabel, 'new-password')}
+          <button class="btn small primary" type="submit">${s.createName}</button>
+        </form>
+        <p class="note">${s.nameHint} ${s.pinHint}</p>
+        ${notice}
+        <h3>${s.haveName}</h3>
+        <form id="signin-form" class="join-row">
+          <input id="login-name" maxlength="16" autocomplete="username" spellcheck="false" placeholder="${s.yourName}">
+          ${pinField('login-pin', s.pinLabel, 'current-password')}
+          <button class="btn small" type="submit">${s.signIn}</button>
+        </form>`;
     return `<main class="screen panel profile">
-      <h2>${p ? s.yourName : s.chooseName}</h2>
-      <form id="name-form" class="join-row">
-        <input id="name-input" maxlength="16" autocomplete="nickname" spellcheck="false" value="${esc(p?.name ?? this.steamName ?? '')}" placeholder="${s.yourName}">
-        <button class="btn small" type="submit">${s.save}</button>
-      </form>
-      <p class="note">${s.nameHint}</p>
-      ${notice}${stats}
+      ${account}
       <h3>🏆 ${s.leaderboard}</h3>
       ${rows}
       <p class="note">${s.pointsNote}</p>
