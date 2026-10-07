@@ -38,13 +38,13 @@ describe('name server', () => {
   });
 
   it('keeps your points when you change your name, and frees the old one', async () => {
-    const { token } = (await call('POST', '/api/players', { name: 'Tito', pin: '1234' })).body;
+    const { token } = (await call('POST', '/api/players', { name: 'Pepito', pin: '1234' })).body;
     await call('POST', '/api/results', { matchId: 'match-0001', points: 100, won: true }, token);
     await call('POST', '/api/players', { name: 'Nena', pin: '1234' });
     expect((await call('PATCH', '/api/me', { name: 'nena' }, token)).body.error).toBe('taken');
-    expect((await call('PATCH', '/api/me', { name: 'Tito Boricua' }, token)).body).toMatchObject({ name: 'Tito Boricua', points: 100 });
-    expect((await call('POST', '/api/players', { name: 'Tito', pin: '1234' })).status).toBe(201);
-    expect((await call('GET', '/api/me', undefined, token)).body.name).toBe('Tito Boricua');
+    expect((await call('PATCH', '/api/me', { name: 'Pepito Boricua' }, token)).body).toMatchObject({ name: 'Pepito Boricua', points: 100 });
+    expect((await call('POST', '/api/players', { name: 'Pepito', pin: '1234' })).status).toBe(201);
+    expect((await call('GET', '/api/me', undefined, token)).body.name).toBe('Pepito Boricua');
   });
 
   it('ranks the leaderboard by points', async () => {

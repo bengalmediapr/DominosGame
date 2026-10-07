@@ -22,7 +22,7 @@ export function nameKey(name: string): string {
 }
 
 /** The table's own characters and words the game shows next to names. */
-const RESERVED = new Set(['wiso', 'papo', 'donalola', 'lola', 'cheo', 'tu', 'you', 'invitado', 'guest', 'ia', 'ai',
+const RESERVED = new Set(['nico', 'tito', 'donrafa', 'rafa', 'yadiel', 'wiso', 'papo', 'donalola', 'lola', 'cheo', 'tu', 'you', 'invitado', 'guest', 'ia', 'ai',
   'anfitrion', 'host', 'capicu', 'admin', 'moderador', 'moderator'].map(nameKey));
 
 export const isReserved = (name: string): boolean => RESERVED.has(nameKey(name));

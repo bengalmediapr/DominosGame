@@ -2,7 +2,8 @@
 
 | Recurso | Archivo en el juego | Fuente | Licencia |
 |---|---|---|---|
-| Personajes y silla | `public/models/{Mage,Rogue,Barbarian,Knight,chair}.*` | KayKit de Kay Lousberg (www.kaylousberg.com) | CC0 |
+| Personajes (Don Rafa, Nico, Yadiel, Tito) | `public/models/{don_rafa,nico,yadiel,tito}.glb` (de `assets-src/boricuas/`, comprimidos con `scripts/prepare-boricuas.mjs`) | **Pendiente: confirmar autor y licencia** | **Pendiente** |
+| Silla | `public/models/chair.*` | KayKit de Kay Lousberg (www.kaylousberg.com) | CC0 |
 | Casa de San Juan | `public/models/house.glb` (de `assets-src/house/SanJuanModernHouse2.fbx`) | **Pendiente: confirmar autor y licencia** | **Pendiente** |
 | Mesa de dominó | `public/models/table.glb` (de `assets-src/table/`) | Sketchfab, **pendiente: enlace, autor y licencia** | **Pendiente** |
 | Forma del dominó | `public/models/domino.glb` (de `assets-src/domino/Domino_Generator.blend`) | **Pendiente: confirmar autor y licencia** | **Pendiente** |

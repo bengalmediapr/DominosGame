@@ -12,7 +12,7 @@ export type LookName = (typeof SEAT_LOOKS)[number];
 
 /** Seated avatar height (world units) and how far above the floor they sit, so heads clear the table. */
 const AVATAR_HEIGHT = 27;
-const AVATAR_LIFT = 16;
+const AVATAR_LIFT = 21;
 
 
 export interface SceneView {
@@ -151,7 +151,7 @@ export class TableScene {
       const hit = this.pick();
       if (hit) this.onPick?.(hit.userData.pick as Pick);
     });
-    this.setCast([null, 'papo', 'lola', 'cheo']);
+    this.setCast([null, SEAT_LOOKS[1], SEAT_LOOKS[2], SEAT_LOOKS[3]]);
     new ResizeObserver(() => this.resize()).observe(canvas);
     this.resize();
     this.renderer.setAnimationLoop(() => this.frame());
@@ -196,7 +196,7 @@ export class TableScene {
 
   private avatarFor(look: LookName): Promise<Avatar> {
     if (!this.avatars.has(look)) {
-      this.avatars.set(look, Promise.all([loadAvatar(look, AVATAR_HEIGHT), loadChair(2.5, (AVATAR_LIFT / AVATAR_HEIGHT) * 2.5)]).then(([a, chair]) => {
+      this.avatars.set(look, Promise.all([loadAvatar(look), loadChair(2.5, (AVATAR_LIFT / AVATAR_HEIGHT) * 2.5)]).then(([a, chair]) => {
         a.root.add(chair);
         return a;
       }));
